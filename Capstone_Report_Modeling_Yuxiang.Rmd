@@ -1,0 +1,1020 @@
+---
+title: "FACTORS ASSOCIATED WITH GENOMIC ALTERATIONS IN TUMOR SAMPLES"
+subtitle: "Group 10 Capstone Project Report (Modeling Part)"
+author: "Yuxiang Ren, Amanda Carrico"
+date: "2024-09-24"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+  word_document:
+    toc: false
+  pdf_document:
+    includes:
+      keep_tex: yes
+    latex_engin: xelatex
+    fig_height: 4
+    fig_width: 4 
+fontsize: 11pt    
+geometry: "left=2cm,right=2cm,top=0.7cm,bottom=0.7cm"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r echo= FALSE, message=FALSE, warning=FALSE}
+# Load the packages
+library(lme4)
+library(lmerTest)
+library(ggplot2)
+library(broom.mixed)
+library(performance)
+library(MuMIn)
+library(car)
+library(FactoMineR) # Lib for PCA
+library(MASS) # for Stepwise Regression
+library(lmerTest)
+library(sjPlot)
+
+library(readr)
+library(readxl)
+library(dplyr)
+library(tidyverse)
+library(janitor)
+
+# this for multiple imputation
+library(mice)
+
+library(broom)
+library(sjstats)
+
+# install.packages("effects")
+library(effects)
+library(mitml) # for apply model in all multi-imputation data set and integrate  results
+```
+
+# Introduction
+
+    Genomic alterations in tumors have been found to be prognostic and are increasingly being used in treatment decision making. One way of measuring this is tumor mutation burden (TMB). Tumor mutation is the total number of mutations found in the DNA (mutations per megabase) of the cancer cells within a sample. Tumor tissue is analyzed for this via various methods depending on the sequencing technology being used.  There were three methods relevant to our research. Whole exome sequencing will measure all of the protein coding regions of the genome (the exome) so the mutations being counted would only be within this region. In this case, TMB is calculated by counting the number of mutations and dividing by the total number of megabases in the exome. Whole exome sequencing allows for comprehensive analysis of the parts of the genome that will have impact on gene expression while allowing for a good cost balance, though there is the limitation of solely exoms. Targeted gene panels focus on specific genes such as those already known to be associated with cancer. Thus, TMB is the the number of mutations within this subset divided by the total number of megabases sequenced (this subset). The method is focused on genes that will be involved which makes it cheaper but could also lead to bias as it is not very comprehensive. Whole genome sequencing is when the whole genome is sequenced to have TMB from the total number of mutations divided by the number of megabases in the entire genome. This is very comprehensive but high in cost. Each method has its strengths and weaknesses. For our data, most of the studies we investigated used whole exome sequencing. 
+
+     According to the “Mutation Burden Independently Predicts Survival in the Pan-Cancer Atlas” study, studies on past tumor mutation do not show a linear relationship between TMB and survival. It is instead seen, after fitting a quadratic model, that “patients with intermediate TMB levels had a significantly poorer survival prognosis than patients with either low or high TMB” (“Mutation Burden Independently Predicts Survival in the Pan-Cancer Atlas”). This study found, for multiple cancer types, that after a certain threshold, TMB is associatied with reduced mortal hazard. These effects dependent on TMB are also seen in clinical efficacy of treatments such as immune checkpoint inhibitors. In the “Tumor mutation burden predicts response and survival to immune checkpoint inhibitors: a meta-analysis" study, High TMB was significantly associated with better progression free survival than low tumor mutation burden patients. This finding was generalized to many cancer types but discovered that there was not one universal TMB cutoff for all cancer types in another study. The effects of TMB are clear but need to be studied more. Another genomic alteration measurement is fraction genome altered, which we will also be investigating.
+    
+     Fraction genome altered (FGA) is the proportion of the genome that has had somatic alterations. This includes any form of alteration such as mutation, copy number variation, or translocation. It is calculated by first determining the regions of the genome that have been altered and the total size of the genome in base pairs. The number of base pairs involved in the altered region is divided by the total for the FGA. It, again, depends on how much of the genome is sequenced – such as  the previously discussed methods of whole genome or targeted. This measurement shows a lot about the tumor and can also provide insight into treatment and prognosis of the cancer.  The fraction of genomic alteration was found to be significant in predicting progression free survival and disease specific survival in “Genomic alterations predictive of poor clinical outcomes in pan-cancer”. This study also suggests evidence of impact on treatment that needs to be further explored.
+     
+    Tumor mutation burden and fraction genome altered have been shown to have significant effects on survival and efficacy of treatments. Due to this, it is imperative that measurements of genomic alteration and what impacts them are studied. There are many factors that could potentially affect the values of these genomic alteration measures. Our research aims to investigate this. We are specifically interested in whether sex, age, and smoking history status have an association with tumor mutation burden and fraction genome altered for various cancer types. We also hope to assess any impact on genomic alterations based treatment decision making and outcome prediction. We will conduct individual factor analysis and descriptive statistics as well as group factor analysis to study the relationships between all variables and the genomic alteration measurement. This and further study in the area could lead to better treatment decision making and understanding in outcome prediction.
+
+
+
+# Methods
+## Missing Value Imputation 
+
+```{r}
+## Load combined database
+Full_smoking <- read.csv("Full_smoking.csv")
+# data  =  datasets input for modeling
+data <- Full_smoking
+head(data)
+# check missing values
+missing_values <- colSums(is.na(data))
+print(missing_values)
+```
+In the statistical modeling phase, the primary data set used is named “Full Smoking,” which was created during the data processing stage.Due to its size and optimization of non missing data among all categories, the smoking data set was used in further analyses with various models. This dataset includes the following variables: Study, Patient_ID, Sample_ID, cancer type, site of timuuor tissue, sex, race, age, os_status, os_month, smoking history, tumor purity, metastatic, Tumor Mutation Burden (TMB), and Fraction Genome Altered (FGA). A snippet of this database is shown above. The dataset ensures that key variables such as patient_id, Study, sample_id, smoking history, sex, and race have no missing values, making it suitable for robust statistical analysis. This complete dataset forms the basis for further statistical exploration, including the construction of mixed-effects models.
+```{r}
+# # pre-check the data types of all the variables
+str(data)
+```
+
+```{r}
+### (Imputation for Missing Values)
+## Impute missing categorical data  ->  unknown
+
+# we don't impute response variables
+data <- data %>%
+  filter(!is.na(TMB)) %>%
+  filter(!is.na(FGA))
+
+categorical_na <-  c("OS_STATUS","CANCER_TYPE","METASTATIC","SITE_OF_TUMOR_TISSUE")
+
+# transform missing categorical data
+data <- data %>%
+  mutate(across(all_of(categorical_na), ~ replace_na(as.character(.), "unknown"))) %>%
+  mutate(across(all_of(categorical_na), as.factor))
+# head(data)
+```
+Since our final dataset is derived from eight different selected studies, the variables measured in each study are not identical.  As a result, our merged database contains a substantial amount of missing values. Therefore, it is necessary to perform appropriate imputation of these missing values before modeling. First, we excluded records with missing values for the response variables (TMB and FGA). Subsequently, we assigned a unified level, ‘unknown,’ to both missing values and invalid values across all categorical variables. 
+
+```{r,message=FALSE}
+
+# # impute missing numeric data
+
+imputed_data <- mice(data, m = 5, method = 'pmm', maxit = 50, seed = 500)
+```
+
+```{r}
+summary(imputed_data)
+plot(imputed_data)
+# Data sets for manual extraction of random effects
+completed_data_1 <- complete(imputed_data, 1)
+completed_data_2 <- complete(imputed_data, 2)
+completed_data_3 <- complete(imputed_data, 3)
+completed_data_4 <- complete(imputed_data, 4)
+completed_data_5 <- complete(imputed_data, 5)
+# head(completed_data_1)
+```
+For the most critical missing numeric values, we applied multiple imputation using the Predictive Mean Matching (PMM) method via the mice package. We generated five imputed datasets with a maximum of 50 iterations. This approach ensured that the imputed data retained as much of the original characteristics as possible while maintaining a sufficiently large data set size. The subsequent statistical modeling analysis will integrate the results from these five imputed datasets to ensure the robustness and reliability of the findings.
+After 50 iterations, the means and standard deviations of the variables stabilized, indicating that the imputation results had converged.
+
+
+```{r}
+
+# post- check missing value
+# factorize the categorical variables (character -> factor)
+# These database is for 
+cleaned_data_1 <- completed_data_1 %>%
+  mutate(across(where(is.character), as.factor))
+cleaned_data_2 <- completed_data_2 %>%
+  mutate(across(where(is.character), as.factor))
+cleaned_data_3 <- completed_data_3 %>%
+  mutate(across(where(is.character), as.factor))
+cleaned_data_4 <- completed_data_4 %>%
+  mutate(across(where(is.character), as.factor))
+cleaned_data_5 <- completed_data_5 %>%
+  mutate(across(where(is.character), as.factor))
+cleaned_data <- completed_data_1 %>%
+  mutate(across(where(is.character), as.factor))
+
+head(cleaned_data)
+# check wheather all catagorical variables have been factorized
+str(cleaned_data)
+# check missing values again
+missing_values <- colSums(is.na(cleaned_data))
+print(missing_values)
+```
+There is no missing value after imputation.
+```{r}
+# Dataset for  automatic integration of fixed effects with mitml
+# Extract all imputed datasets and convert to long format
+imputed_long <- complete(imputed_data, action = "long", include = TRUE) ## 包含所有插补sets的总dataset
+
+# factorizaion
+imputed_long <- imputed_long %>%
+  mutate(across(where(is.character), as.factor))
+
+# restore data back into "mids" object
+new_imputed_data <- mice::as.mids(imputed_long)
+
+#  “mids” to  mitml.list
+imputed_list <- mids2mitml.list(new_imputed_data)
+```
+
+
+
+## Modeling with Mixed Effect Regression
+In the modeling, we aimed to separately construct mixed-effects regression models for two measurements of Tumor Genomic Alterations—Tumor Mutation Burden (TMB) and Fraction Genome Altered (FGA)—to assess theImpact of various clinical factors on genomic alterations. We selected this model because we assumed that the clinical data exhibit a potential hierarchical structure (e.g., study and cancer type, study and patient). Additionally, the effects of some categorical variables, such as different data sources, are considered to be random, and there may be repeated or multiple records for the same patient.
+
+### Multicollinearity Check
+```{r}
+# Measure：VIF value
+linear_model_TMB <- lm(TMB ~ AGE + SEX + RACE  + TUMOR_PURITY+OS_STATUS+CANCER_TYPE +METASTATIC+SMOKING_HISTORY, data = cleaned_data)
+vif_values_TMB <- vif(linear_model_TMB)
+print(vif_values_TMB)
+# drop Metastatic due to multicolinear with cancer types
+linear_model_FGA <- lm(TMB ~ AGE + SEX + RACE  + TUMOR_PURITY+OS_STATUS+CANCER_TYPE +SMOKING_HISTORY, data = cleaned_data)
+vif_values_FGA <- vif(linear_model_TMB)
+print(vif_values_TMB)
+```
+Before constructing the final models, we used a simple linear regression model to examine whether there was multicollinearity among the potential predictors. Variables showing multicollinearity were excluded from the subsequent modeling process due to the violation of the independence assumption required for reliable model estimation.
+Based on the VIF (Variance Inflation Factor) values, we identified a strong multicollinearity between the variables METASTATIC and Cancer Type. As a result, METASTATIC was excluded from the final model to maintain the independence assumption and ensure reliable model estimates.
+
+### Variable Distribution Visualization (Assumption check)
+```{r}
+# hist(sqrt(cleaned_data$FGA), probability = TRUE, main = "Histogram with Normal Curve For sqrt FGA")
+qqnorm(sqrt(cleaned_data$FGA))
+qqline(sqrt(cleaned_data$FGA), col = "red")
+
+# hist(log2(cleaned_data$TMB+1), probability = TRUE, main = "Histogram with Normal Curve For transformed TMB")
+qqnorm(log2(cleaned_data$TMB+1))
+qqline(log2(cleaned_data$TMB+1), col = "red")
+
+```
+
+Since TMB and FGA did not follow a normal distribution, we applied transformations to meet the normality assumption for the response variables. The transformed TMB was calculated as log2(TMB + 1), and the transformed FGA was computed as sqrt(FGA). After these transformations, the response variables approximated a normal distribution. The Q-Q plots for transformed TMB and transformed FGA are shown above, illustrating their improved normality after transformation.
+
+### Modeling Explaination
+Regarding the hierarchical structure of the random effects is not entirely clear due to the nature of the data. The dataset includes a PanCancer study covering multiple cancer types, as well as several specialized studies focused on one or two cancer types. Additionally, some studies from the same institution (MSK) share clinical data from overlapping patient cohorts. Therefore, in addition to modeling with crossed random effects, we also explored various alternative nested structures for the random effects. We then compared the model fit results across these different structures, aiming to investigate whether more complex model structures could improve model fit or enhance interpretability. Given that smoking history was included as a fixed effect, we also attempted to build an additional model including its interaction with cancer type to explore whether smoking history has a stronger effect on TMB or FGA  in certain cancer types, such as lung cancer.
+After completing the modeling process, we performed a normality test on the residuals. Since the database size exceeded the sample size limits of the Shapiro-Wilk test in the stats package, we assessed normality using a Q-Q plot of the residuals. Finally, we diagnosed and compared models’ goodness of  fit using the Akaike Information Criterion (AIC), Bayesian Information Criterion (BIC), and the R-squared calculation function from the performance package.
+
+
+###  Modeling with TMB
+
+
+
+
+```{r}
+# Mixed Effect Model for TMB
+
+# main separated models
+mixed_model_TMB_x_1 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1|CANCER_TYPE) , data = cleaned_data_1)
+mixed_model_TMB_x_2 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1|CANCER_TYPE) , data = cleaned_data_2)
+mixed_model_TMB_x_3 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1|CANCER_TYPE) , data = cleaned_data_3)
+mixed_model_TMB_x_4 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1|CANCER_TYPE) , data = cleaned_data_4)
+mixed_model_TMB_x_5 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1|CANCER_TYPE) , data = cleaned_data_5)
+
+# main integrated model
+fit <- with(imputed_list, lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1|CANCER_TYPE)))
+pooled_results_TMB_x <- testEstimates(fit)
+
+
+# alternative model
+mixed_model_TMB_in_1 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY  +  (1 | PATIENT_ID ) + (1 | Study:CANCER_TYPE ) , data = cleaned_data_1)
+mixed_model_TMB_in_2 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY  +  (1 | PATIENT_ID ) + (1 | Study:CANCER_TYPE ) , data = cleaned_data_2)
+mixed_model_TMB_in_3 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY  +  (1 | PATIENT_ID ) + (1 | Study:CANCER_TYPE ) , data = cleaned_data_3)
+mixed_model_TMB_in_4 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY  +  (1 | PATIENT_ID ) + (1 | Study:CANCER_TYPE ) , data = cleaned_data_4)
+mixed_model_TMB_in_5 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY  +  (1 | PATIENT_ID ) + (1 | Study:CANCER_TYPE ) , data = cleaned_data_5)
+
+```
+We used the five imputed datasets to model the transformed TMB. For the fixed effects, we integrated the results using the testEstimates function from the mitml package. However, this function does not support the integration of random effects and does not calculate AIC, BIC, or R-squared. To address this limitation, we manually modeled the transformed TMB on each imputed dataset, enabling us to capture random effects and perform model evaluation and comparison across datasets.
+
+### Diagnosis and Comparison for TMB Models
+```{r}
+# Main models for TMB
+aic_values <- c()
+bic_values <- c()
+r2_values <- c()
+
+
+model_list <- list(mixed_model_TMB_x_1, mixed_model_TMB_x_2, mixed_model_TMB_x_3, mixed_model_TMB_x_4, mixed_model_TMB_x_5)
+
+for (model in model_list) {
+  aic_values <- c(aic_values, AIC(model))
+  bic_values <- c(bic_values, BIC(model))
+  r2_values <- c(r2_values, performance::r2(model)$R2_conditional)  # For conditional R2
+}
+
+avg_aic <- mean(aic_values)
+avg_bic <- mean(bic_values)
+avg_r2 <- mean(r2_values)
+
+cat("Diagnosis for TMB main model \n")
+cat("Average AIC:", avg_aic, "\n")
+cat("Average BIC:", avg_bic, "\n")
+cat("Average R-squared:", avg_r2, "\n")
+cat("\n")
+
+# Alter Models for TMB
+aic_values <- c()
+bic_values <- c()
+r2_values <- c()
+
+
+model_list <- list(mixed_model_TMB_in_1, mixed_model_TMB_in_2, mixed_model_TMB_in_3, mixed_model_TMB_in_4, mixed_model_TMB_in_5)
+
+for (model in model_list) {
+  aic_values <- c(aic_values, AIC(model))
+  bic_values <- c(bic_values, BIC(model))
+  r2_values <- c(r2_values, performance::r2(model)$R2_conditional)  # For conditional R2
+}
+
+avg_aic <- mean(aic_values)
+avg_bic <- mean(bic_values)
+avg_r2 <- mean(r2_values)
+
+cat("Diagnosis for TMB alternative model \n")
+cat("Average AIC:", avg_aic, "\n")
+cat("Average BIC:", avg_bic, "\n")
+cat("Average R-squared:", avg_r2, "\n")
+```
+From the model diagnostics, we found that more complex alternative models incorporating interactions did not show any advantage in terms of goodness of fit compared to the main model with crossed random effects. Despite adding interaction terms, these alternative models did not outperform the simpler structure of the main model.
+
+```{r}
+anova(mixed_model_TMB_x_1,mixed_model_TMB_in_1)
+anova(mixed_model_TMB_x_2,mixed_model_TMB_in_2)
+anova(mixed_model_TMB_x_3,mixed_model_TMB_in_3)
+anova(mixed_model_TMB_x_4,mixed_model_TMB_in_4)
+anova(mixed_model_TMB_x_5,mixed_model_TMB_in_5)
+```
+
+Additionally, ANOVA tests comparing the two models across all imputed data sets returned p-values greater than 0.05, indicating that the differences between the models were not statistically significant. This further confirms that the more complex models with interactions do not offer significant improvements over the main model.
+
+
+```{r,fig.height=10}
+# check normality of residuals
+par(mfrow = c(3,2))
+qqnorm(residuals(mixed_model_TMB_x_1))
+qqline(residuals(mixed_model_TMB_x_1))
+qqnorm(residuals(mixed_model_TMB_x_2))
+qqline(residuals(mixed_model_TMB_x_2))
+qqnorm(residuals(mixed_model_TMB_x_3))
+qqline(residuals(mixed_model_TMB_x_3))
+qqnorm(residuals(mixed_model_TMB_x_4))
+qqline(residuals(mixed_model_TMB_x_4))
+qqnorm(residuals(mixed_model_TMB_x_5))
+qqline(residuals(mixed_model_TMB_x_5))
+
+# # scatter plot for residuals vs fitted values
+# par(mfrow = c(3,2))
+# plot(fitted(mixed_model_TMB_x_1), residuals(mixed_model_TMB_x_1))
+# abline(h = 0, col = "blue")
+# plot(fitted(mixed_model_TMB_x_2), residuals(mixed_model_TMB_x_2))
+# abline(h = 0, col = "blue")
+# plot(fitted(mixed_model_TMB_x_3), residuals(mixed_model_TMB_x_3))
+# abline(h = 0, col = "blue")
+# plot(fitted(mixed_model_TMB_x_4), residuals(mixed_model_TMB_x_4))
+# abline(h = 0, col = "blue")
+# plot(fitted(mixed_model_TMB_x_5), residuals(mixed_model_TMB_x_5))
+# abline(h = 0, col = "blue")
+```
+
+
+The Q-Q plots for the residuals of the fitted models across each data set are shown above. The residuals generally follow a normal distribution, though there is some deviation at the tails. This indicates that while the models perform well in most of the distribution, there may still be some bias in the extreme values.
+
+
+
+
+
+
+###  Modeling with FGA
+```{r}
+# Mixed Effect Model for FGA
+
+# main separated models
+mixed_model_FGA_x_1 <- lmerTest::lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1|CANCER_TYPE) , data = cleaned_data_1)
+mixed_model_FGA_x_2 <- lmerTest::lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1|CANCER_TYPE) , data = cleaned_data_2)
+mixed_model_FGA_x_3 <- lmerTest::lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1|CANCER_TYPE) , data = cleaned_data_3)
+mixed_model_FGA_x_4 <- lmerTest::lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1|CANCER_TYPE) , data = cleaned_data_4)
+mixed_model_FGA_x_5 <- lmerTest::lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1|CANCER_TYPE) , data = cleaned_data_5)
+
+# main integrated model
+fit <- with(imputed_list, lmerTest::lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) + (1|CANCER_TYPE)))
+pooled_results_FGA_x <- testEstimates(fit)
+
+
+# alternative model
+mixed_model_FGA_n_1 <- lmerTest::lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY  +  (1 | PATIENT_ID ) + (1 | Study) + (1|Study:CANCER_TYPE) , data = cleaned_data_1)
+mixed_model_FGA_n_2 <- lmerTest::lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY  +  (1 | PATIENT_ID ) + (1 | Study) + (1|Study:CANCER_TYPE) , data = cleaned_data_2)
+mixed_model_FGA_n_3 <- lmerTest::lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY  +  (1 | PATIENT_ID ) + (1 | Study) + (1|Study:CANCER_TYPE) , data = cleaned_data_3)
+mixed_model_FGA_n_4 <- lmerTest::lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY  +  (1 | PATIENT_ID ) + (1 | Study) + (1|Study:CANCER_TYPE) , data = cleaned_data_4)
+mixed_model_FGA_n_5 <- lmerTest::lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY  +  (1 | PATIENT_ID ) + (1 | Study) + (1|Study:CANCER_TYPE) , data = cleaned_data_5)
+```
+
+We used the five imputed datasets to model the transformed FGA. For the fixed effects, we integrated the results using the testEstimates function from the mitml package. However, this function does not support the integration of random effects and does not calculate AIC, BIC, or R-squared. To address this limitation, we manually modeled the transformed TMB on each imputed dataset, enabling us to capture random effects and perform model evaluation and comparison across datasets.
+
+
+
+
+### Diagnosis and Comparison for FGA Models
+```{r}
+# Main models for FGA
+aic_values <- c()
+bic_values <- c()
+r2_values <- c()
+
+
+model_list <- list(mixed_model_FGA_x_1, mixed_model_FGA_x_2, mixed_model_FGA_x_3, mixed_model_FGA_x_4, mixed_model_FGA_x_5)
+
+for (model in model_list) {
+  aic_values <- c(aic_values, AIC(model))
+  bic_values <- c(bic_values, BIC(model))
+  r2_values <- c(r2_values, performance::r2(model)$R2_conditional)  # For conditional R2
+}
+
+avg_aic <- mean(aic_values)
+avg_bic <- mean(bic_values)
+avg_r2 <- mean(r2_values)
+
+cat("Diagnosis for FGA main model \n")
+cat("Average AIC:", avg_aic, "\n")
+cat("Average BIC:", avg_bic, "\n")
+cat("Average R-squared:", avg_r2, "\n")
+cat("\n")
+
+# Alter Models for FGA
+aic_values <- c()
+bic_values <- c()
+r2_values <- c()
+
+
+model_list <- list(mixed_model_FGA_n_1, mixed_model_FGA_n_2, mixed_model_FGA_n_3, mixed_model_FGA_n_4, mixed_model_FGA_n_5)
+
+for (model in model_list) {
+  aic_values <- c(aic_values, AIC(model))
+  bic_values <- c(bic_values, BIC(model))
+  r2_values <- c(r2_values, performance::r2(model)$R2_conditional)  # For conditional R2
+}
+
+avg_aic <- mean(aic_values)
+avg_bic <- mean(bic_values)
+avg_r2 <- mean(r2_values)
+
+cat("Diagnosis for FGA alternative model \n")
+cat("Average AIC:", avg_aic, "\n")
+cat("Average BIC:", avg_bic, "\n")
+cat("Average R-squared:", avg_r2, "\n")
+
+```
+
+From the model diagnostics, we found that more complex alternative models incorporating interactions did not show any advantage in terms of goodness of fit compared to the main model with crossed random effects. Despite adding interaction terms, these alternative models did not outperform the simpler structure of the main model.
+
+```{r}
+anova(mixed_model_FGA_x_1,mixed_model_FGA_n_1)
+anova(mixed_model_FGA_x_2,mixed_model_FGA_n_2)
+anova(mixed_model_FGA_x_3,mixed_model_FGA_n_3)
+anova(mixed_model_FGA_x_4,mixed_model_FGA_n_4)
+anova(mixed_model_FGA_x_5,mixed_model_FGA_n_5)
+```
+Additionally, ANOVA tests comparing the two models across all imputed data sets indicated that the differences between the models were not statistically significant. This further confirms that the more complex models with interactions do not offer significant improvements over the main model.
+
+```{r,fig.height=10}
+# check normality of residuals
+par(mfrow = c(3,2))
+qqnorm(residuals(mixed_model_FGA_x_1))
+qqline(residuals(mixed_model_FGA_x_1))
+qqnorm(residuals(mixed_model_FGA_x_2))
+qqline(residuals(mixed_model_FGA_x_2))
+qqnorm(residuals(mixed_model_FGA_x_3))
+qqline(residuals(mixed_model_FGA_x_3))
+qqnorm(residuals(mixed_model_FGA_x_4))
+qqline(residuals(mixed_model_FGA_x_4))
+qqnorm(residuals(mixed_model_FGA_x_5))
+qqline(residuals(mixed_model_FGA_x_5))
+```
+```{r, echo = FALSE}
+# # scatter plot for residuals vs fitted values
+# par(mfrow = c(3,2))
+# plot(fitted(mixed_model_FGA_x_1), residuals(mixed_model_FGA_x_1))
+# abline(h = 0, col = "blue")
+# plot(fitted(mixed_model_FGA_x_2), residuals(mixed_model_FGA_x_2))
+# abline(h = 0, col = "blue")
+# plot(fitted(mixed_model_FGA_x_3), residuals(mixed_model_FGA_x_3))
+# abline(h = 0, col = "blue")
+# plot(fitted(mixed_model_FGA_x_4), residuals(mixed_model_FGA_x_4))
+# abline(h = 0, col = "blue")
+# plot(fitted(mixed_model_FGA_x_5), residuals(mixed_model_FGA_x_5))
+# abline(h = 0, col = "blue")
+```
+
+The Q-Q plots for the residuals of the fitted models across each data set are shown above. The residuals generally follow a normal distribution, though there is some deviation at the tails. This indicates that while the models perform well in most of the distribution, there may still be some bias in the extreme values.
+
+### Smoking History v.s. Cancer Type
+
+```{r,message=FALSE,warning=FALSE}
+# main separated models
+
+SH_CT_TMB_1 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1 + SMOKING_HISTORY|CANCER_TYPE) , data = cleaned_data_1)
+SH_CT_TMB_2 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1 + SMOKING_HISTORY|CANCER_TYPE) , data = cleaned_data_2)
+SH_CT_TMB_3 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1 + SMOKING_HISTORY|CANCER_TYPE) , data = cleaned_data_3)
+SH_CT_TMB_4 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1 + SMOKING_HISTORY|CANCER_TYPE) , data = cleaned_data_4)
+SH_CT_TMB_5 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1 + SMOKING_HISTORY|CANCER_TYPE) , data = cleaned_data_5)
+
+fit_cs <- with(imputed_list, lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1 + SMOKING_HISTORY|CANCER_TYPE)))
+pooled_results_cancer_smoke <- testEstimates(fit_cs)
+
+```
+
+
+We also constructed an additional model to explore whether the effect of smoking history on TMB varies across different cancer types. In this model, smoking history was included as a random slope to account for its varying influence across cancer types. The mitml package was used to integrate the fixed effects, while manual modeling was employed to capture the random effects from each dataset’s fit.
+
+
+# Results
+## Result from Main Model with Transformed TMB
+Our Main Model with Transformed TMB is ：
+$${\log_2(\text{TMB} + 1) = \beta_0 + \beta_1 \cdot \text{AGE} + \beta_2 \cdot \text{SEX} + \beta_3 \cdot \text{RACE} + \beta_4 \cdot \text{TUMOR_PURITY} + \beta_5 \cdot \text{SMOKING_HISTORY} \\
++ u_{\text{PATIENT_ID}} + u_{\text{Study}} + u_{\text{CANCER_TYPE}} + \epsilon} $$
+
+```{r}
+# Extracting fixed effects
+summary(pooled_results_TMB_x)
+```
+From the integrated fixed effect we can find:
+
+	•	The estimate of Age is -0.005 with a p-value of 0.789, indicating no significant linear relationship between age and TMB. While the negative coefficient suggests a slight decrease in TMB with age, this effect is not statistically significant.
+
+	•	The estimate for males is 0.075, with a p-value of 0.012, suggesting that males have significantly higher TMB compared to females.
+	•	The estimate for unknown sex is 1.751, with a p-value of 0.000, indicating a significantly higher TMB for individuals with unknown sex compared to females.
+
+	•	For the different race categories (Black, Other, Unknown, White), the estimates and p-values indicate that race does not have a significant effect on TMB. All p-values are greater than 0.05, suggesting that race differences are not statistically significant in this model.
+
+	•	The estimate for TUMOR_PURITY is 0.004 with a p-value of 0.030, indicating a significant positive relationship between tumor purity and TMB. As tumor purity increases, TMB significantly increases.
+
+	•	The estimate for “Former smoker” is -0.143, with a p-value of 0.024, suggesting that former smokers have significantly lower TMB compared to current smokers.
+	•	The estimate for “Never smoker” is -0.320, with a p-value of 0.000, indicating that individuals who have never smoked have significantly lower TMB compared to current smokers, with a more substantial reduction than former smokers.
+
+The fixed effects in the model reveal that sex, tumor purity, and smoking history are significant predictors of TMB. However, age and race do not significantly impact TMB in this model.
+
+```{r}
+
+# Extracting random effect
+## Extraction variance
+variance_list <- list()
+
+for (i in 1:5) {
+  model_name <- get(paste0("mixed_model_TMB_x_", i))
+
+  re_variance <- as.data.frame(VarCorr(model_name))
+  
+  re_variance_df <- data.frame(
+    group = re_variance$grp,
+    term = re_variance$var1,
+    variance = re_variance$vcov
+  )
+  
+  variance_list[[i]] <- rbind(re_variance_df)
+}
+
+variance_df <- do.call(rbind, variance_list)
+
+# Variance of each variables（按 group 和 term 分组）
+mean_variances <- aggregate(variance ~ group , data = variance_df, FUN = mean)
+
+print(mean_variances)
+```
+From the integrated random effect we can find:
+-
+
+  •	The variance for cancer type is 0.2984, indicating that there is considerable variability in TMB between different cancer types. This means that part of the variability in TMB can be explained by differences across cancer types.
+	
+	•	The variance for patient ID is 0.7996, showing substantial variability in TMB between individual patients. This is the largest source of variance in the model, meaning that patient-level differences have the greatest influence on TMB.
+
+	•	The variance for studies is 0.1975, suggesting that there are some differences in TMB across different studies, though the influence is smaller compared to patient-level variance.
+
+	•	The residual variance is 0.2339, representing the unexplained variation in TMB. Residual variance reflects random errors or other factors not included in the model.
+
+
+```{r}
+## Extraction intercept (visualizaion all datasets' randam effect on a single plot)
+### Extract the random effects of each model and add the model label
+extract_random_effects <- function(model, model_name) {
+  random_effects <- ranef(model)
+  #  get Patient_ID, Cancer_Type, Study random effect
+  patient_id_effects <- data.frame(PatientID = rownames(random_effects$PATIENT_ID), 
+                                   Effect = random_effects$PATIENT_ID$`(Intercept)`, 
+                                   group = "Patient_ID", 
+                                   model = model_name)
+  
+  cancer_type_effects <- data.frame(CancerType = rownames(random_effects$CANCER_TYPE), 
+                                    Effect = random_effects$CANCER_TYPE$`(Intercept)`, 
+                                    group = "Cancer_Type", 
+                                    model = model_name)
+  
+  study_effects <- data.frame(Study = rownames(random_effects$Study), 
+                              Effect = random_effects$Study$`(Intercept)`, 
+                              group = "Study", 
+                              model = model_name)
+  
+  return(list(patient_id = patient_id_effects, cancer_type = cancer_type_effects, study = study_effects))
+}
+
+# get 5 models‘ random eff
+random_effects_1 <- extract_random_effects(mixed_model_TMB_x_1, "Model_1")
+random_effects_2 <- extract_random_effects(mixed_model_TMB_x_2, "Model_2")
+random_effects_3 <- extract_random_effects(mixed_model_TMB_x_3, "Model_3")
+random_effects_4 <- extract_random_effects(mixed_model_TMB_x_4, "Model_4")
+random_effects_5 <- extract_random_effects(mixed_model_TMB_x_5, "Model_5")
+
+# put togehter by vairbale name
+combined_patient_id <- rbind(random_effects_1$patient_id, random_effects_2$patient_id, random_effects_3$patient_id,
+                             random_effects_4$patient_id, random_effects_5$patient_id)
+
+combined_cancer_type <- rbind(random_effects_1$cancer_type, random_effects_2$cancer_type, random_effects_3$cancer_type,
+                              random_effects_4$cancer_type, random_effects_5$cancer_type)
+
+combined_study <- rbind(random_effects_1$study, random_effects_2$study, random_effects_3$study,
+                        random_effects_4$study, random_effects_5$study)
+
+```
+
+```{r,fig.height=10}
+# Visual。。。。
+ggplot(combined_patient_id, aes(x = PatientID, y = Effect, color = model)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Random Effects for Patient ID on TMB across All Imputated Datasets",
+       x = "Patient ID", y = "Random Effect Estimate (Intercept)") +
+  # theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  theme(axis.text.x = element_blank())
+
+ggplot(combined_cancer_type, aes(x = CancerType, y = Effect, color = model)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Random Effects for Cancer Type on TMB across All Imputated Datasets",
+       x = "Cancer Type", y = "Random Effect Estimate (Intercept)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(combined_study, aes(x = Study, y = Effect, color = model)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Random Effects for Study on TMB across All Imputated Datasets",
+       x = "Study", y = "Random Effect Estimate (Intercept)") +
+  scale_y_continuous(limits = c(min(combined_study$Effect), max(combined_study$Effect))) +
+  # theme(axis.text.x = element_blank())
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+ 
+```
+
+```{r}
+# 所有插补集的fixed effect 的可视化
+# 从 pooled_results 中提取固定效应估计
+estimates <- pooled_results_TMB_x$estimates
+
+forest_data <- data.frame(
+  term = rownames(estimates),
+  estimate = estimates[, "Estimate"],
+  std.error = estimates[, "Std.Error"],
+  conf.low = estimates[, "Estimate"] - 1.96 * estimates[, "Std.Error"],
+  conf.high = estimates[, "Estimate"] + 1.96 * estimates[, "Std.Error"]
+)
+
+
+ggplot(forest_data, aes(x = estimate, y = term)) +
+  geom_point(size = 3) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  theme_minimal() +
+  labs(title = "Forest Plot of Fixed Effects on TMB", x = "Estimate", y = "Predictor") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red")
+```
+
+## Results from Main Model with Transformed FGA
+
+Our Main Model with Transformed FGA is ：
+$${\sqrt{FGA}  = \beta_0 + \beta_1 \cdot \text{AGE} + \beta_2 \cdot \text{SEX} + \beta_3 \cdot \text{RACE} + \beta_4 \cdot \text{TUMOR_PURITY} + \beta_5 \cdot \text{SMOKING_HISTORY} \\
++ u_{\text{PATIENT_ID}} + u_{\text{Study}} + u_{\text{CANCER_TYPE}} + \epsilon} $$
+
+```{r}
+# Extracting fixed effects
+summary(pooled_results_FGA_x)
+```
+
+From the integrated fixed effect we can find:
+
+-
+  •	The estimate of Age is -0.001 with a p-value of 0.507, indicating no significant linear relationship between age and TMB. While the negative coefficient suggests a slight decrease in TMB with age, this effect is not statistically significant.
+
+	•	The estimate for males is 0.009, with a p-value of 0.094. Being male slightly increases FGA compared to females, but this effect is not statistically significant (p > 0.05).
+	•	The estimate for unknown sex is -0.199, with a p-value of 0.001. Individuals with unknown sex have significantly lower FGA compared to females, and this effect is statistically significant (p < 0.05).
+
+	•	For the different race categories (Black, Other, Unknown, White), the estimates and p-values indicate that race does not have a significant effect on FGA. All p-values are greater than 0.05, suggesting that race differences are not statistically significant in this model.
+
+	•	The estimate for TUMOR_PURITY is 0.003 with a p-value of 0.006, indicating a significant positive relationship between tumor purity and FGA. As tumor purity increases, FGA significantly increases.
+
+	•	The estimate for “Former smoker” is -0.020, with a p-value of 0.078. Former smokers tend to have slightly lower FGA compared to current smokers, but this effect is not statistically significant (p > 0.05).
+	•	The estimate for “Never smoker” is -0.036, with a p-value of 0.004.Individuals who have never smoked have significantly lower FGA compared to current smokers (p < 0.05).
+
+
+```{r}
+
+# Extracting random effect
+## Extraction variance
+variance_list <- list()
+
+for (i in 1:5) {
+  model_name <- get(paste0("mixed_model_FGA_x_", i))
+
+  re_variance <- as.data.frame(VarCorr(model_name))
+  
+  re_variance_df <- data.frame(
+    group = re_variance$grp,
+    term = re_variance$var1,
+    variance = re_variance$vcov
+  )
+  
+  variance_list[[i]] <- rbind(re_variance_df)
+}
+
+variance_df <- do.call(rbind, variance_list)
+
+# Variance of each variables（按 group 和 term 分组）
+mean_variances <- aggregate(variance ~ group , data = variance_df, FUN = mean)
+
+print(mean_variances)
+```
+From the integrated random effect, we can find:
+-
+	•	Variance of Cancer Type is 0.0046, which attributed to differences between cancer types is relatively small, indicating that there are modest differences in FGA values between various cancer types.
+
+	•	Variance of Patient ID is 0.0297. The patient-level variance is larger compared to cancer type, suggesting that individual patient characteristics explain more of the variation in FGA compared to cancer type.
+
+	•	Variance of Study is 0.0055. The variance attributed to the different studies is also relatively small, suggesting that study-specific differences contribute modestly to the variation in FGA.
+
+	•	Variance of residual is 0.0121. The residual variance represents the variation that is not explained by the random effects or the fixed effects in the model. This indicates a moderate level of unexplained variation in FGA.
+
+
+
+```{r}
+## Extraction intercept (visualizaion all datasets' randam effect on a single plot)
+### Extract the random effects of each model and add the model label
+extract_random_effects <- function(model, model_name) {
+  random_effects <- ranef(model)
+  #  get Patient_ID, Cancer_Type, Study random effect
+  patient_id_effects <- data.frame(PatientID = rownames(random_effects$PATIENT_ID), 
+                                   Effect = random_effects$PATIENT_ID$`(Intercept)`, 
+                                   group = "Patient_ID", 
+                                   model = model_name)
+  
+  cancer_type_effects <- data.frame(CancerType = rownames(random_effects$CANCER_TYPE), 
+                                    Effect = random_effects$CANCER_TYPE$`(Intercept)`, 
+                                    group = "Cancer_Type", 
+                                    model = model_name)
+  
+  study_effects <- data.frame(Study = rownames(random_effects$Study), 
+                              Effect = random_effects$Study$`(Intercept)`, 
+                              group = "Study", 
+                              model = model_name)
+  
+  return(list(patient_id = patient_id_effects, cancer_type = cancer_type_effects, study = study_effects))
+}
+
+# get 5 models‘ random eff
+random_effects_1 <- extract_random_effects(mixed_model_FGA_x_1, "Model_1")
+random_effects_2 <- extract_random_effects(mixed_model_FGA_x_2, "Model_2")
+random_effects_3 <- extract_random_effects(mixed_model_FGA_x_3, "Model_3")
+random_effects_4 <- extract_random_effects(mixed_model_FGA_x_4, "Model_4")
+random_effects_5 <- extract_random_effects(mixed_model_FGA_x_5, "Model_5")
+
+# put togehter by vairbale name
+combined_patient_id <- rbind(random_effects_1$patient_id, random_effects_2$patient_id, random_effects_3$patient_id,
+                             random_effects_4$patient_id, random_effects_5$patient_id)
+
+combined_cancer_type <- rbind(random_effects_1$cancer_type, random_effects_2$cancer_type, random_effects_3$cancer_type,
+                              random_effects_4$cancer_type, random_effects_5$cancer_type)
+
+combined_study <- rbind(random_effects_1$study, random_effects_2$study, random_effects_3$study,
+                        random_effects_4$study, random_effects_5$study)
+
+```
+
+```{r,fig.height=10}
+# Visual。。。。
+ggplot(combined_patient_id, aes(x = PatientID, y = Effect, color = model)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Random Effects for Patient ID on FGA across All Imputated Datasets",
+       x = "Patient ID", y = "Random Effect Estimate (Intercept)") +
+  # theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  theme(axis.text.x = element_blank())
+
+ggplot(combined_cancer_type, aes(x = CancerType, y = Effect, color = model)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Random Effects for Cancer Type on FGA across All Imputated Datasets",
+       x = "Cancer Type", y = "Random Effect Estimate (Intercept)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(combined_study, aes(x = Study, y = Effect, color = model)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Random Effects for Study on FGA across All Imputated Datasets",
+       x = "Study", y = "Random Effect Estimate (Intercept)") +
+  scale_y_continuous(limits = c(min(combined_study$Effect), max(combined_study$Effect))) +
+  # theme(axis.text.x = element_blank())
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+ 
+```
+
+
+```{r}
+
+estimates <- pooled_results_FGA_x$estimates
+
+forest_data <- data.frame(
+  term = rownames(estimates),
+  estimate = estimates[, "Estimate"],
+  std.error = estimates[, "Std.Error"],
+  conf.low = estimates[, "Estimate"] - 1.96 * estimates[, "Std.Error"],
+  conf.high = estimates[, "Estimate"] + 1.96 * estimates[, "Std.Error"]
+)
+
+
+ggplot(forest_data, aes(x = estimate, y = term)) +
+  geom_point(size = 3) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  theme_minimal() +
+  labs(title = "Forest Plot of Fixed Effects on FGA", x = "Estimate", y = "Predictor") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "blue")
+
+```
+
+## Smoking History vs Cancer Type
+
+Our Additional Model with Random Slope of Smoking Effect on Cancer Type is ：
+$${\log_2(\text{TMB} + 1) = \beta_0 + \beta_1 \cdot \text{AGE} + \beta_2 \cdot \text{SEX} + \beta_3 \cdot \text{RACE} + \beta_4 \cdot \text{TUMOR_PURITY} + \beta_5 \cdot \text{SMOKING_HISTORY}
++ u_{\text{PATIENT_ID}} + u_{\text{Study}} + u_{\text{CANCER_TYPE}} + u_{\text{CANCER_TYPE}} \cdot \text{SMOKING_HISTORY} + \epsilon}$$
+
+```{r}
+# VIsualiaztion for smoking history in different cancer type
+# Extract the random effects
+random_effects_1 <- ranef(SH_CT_TMB_1)$CANCER_TYPE
+random_effects_2 <- ranef(SH_CT_TMB_2)$CANCER_TYPE
+random_effects_3 <- ranef(SH_CT_TMB_3)$CANCER_TYPE
+random_effects_4 <- ranef(SH_CT_TMB_4)$CANCER_TYPE
+random_effects_5 <- ranef(SH_CT_TMB_5)$CANCER_TYPE
+
+# Extract the random slopes of SH
+smoking_slope_1 <- as.data.frame(random_effects_1)[, c("SMOKING_HISTORYFormer", "SMOKING_HISTORYNever")]
+smoking_slope_2 <- as.data.frame(random_effects_2)[, c("SMOKING_HISTORYFormer", "SMOKING_HISTORYNever")]
+smoking_slope_3 <- as.data.frame(random_effects_3)[, c("SMOKING_HISTORYFormer", "SMOKING_HISTORYNever")]
+smoking_slope_4 <- as.data.frame(random_effects_4)[, c("SMOKING_HISTORYFormer", "SMOKING_HISTORYNever")]
+smoking_slope_5 <- as.data.frame(random_effects_5)[, c("SMOKING_HISTORYFormer", "SMOKING_HISTORYNever")]
+
+
+smoking_slope_1$CANCER_TYPE <- rownames(random_effects_1)
+smoking_slope_2$CANCER_TYPE <- rownames(random_effects_2)
+smoking_slope_3$CANCER_TYPE <- rownames(random_effects_3)
+smoking_slope_4$CANCER_TYPE <- rownames(random_effects_4)
+smoking_slope_5$CANCER_TYPE <- rownames(random_effects_5)
+
+# print(smoking_slope)
+
+
+
+# to long format
+smoking_slope_long_1 <- gather(smoking_slope_1, key = "SMOKING_HISTORY", value = "Slope", -CANCER_TYPE)
+smoking_slope_long_2 <- gather(smoking_slope_2, key = "SMOKING_HISTORY", value = "Slope", -CANCER_TYPE)
+smoking_slope_long_3 <- gather(smoking_slope_3, key = "SMOKING_HISTORY", value = "Slope", -CANCER_TYPE)
+smoking_slope_long_4 <- gather(smoking_slope_4, key = "SMOKING_HISTORY", value = "Slope", -CANCER_TYPE)
+smoking_slope_long_5 <- gather(smoking_slope_5, key = "SMOKING_HISTORY", value = "Slope", -CANCER_TYPE)
+
+# print(smoking_slope_long)
+
+
+ggplot(smoking_slope_long_1, aes(x = CANCER_TYPE, y = Slope, fill = SMOKING_HISTORY)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Cancer Type", y = "Smoking History Coefficient (Slope)", 
+       title = "Random Slopes of Smoking History (Former vs Never) across Cancer Types plt#1") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggplot(smoking_slope_long_2, aes(x = CANCER_TYPE, y = Slope, fill = SMOKING_HISTORY)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Cancer Type", y = "Smoking History Coefficient (Slope)", 
+       title = "Random Slopes of Smoking History (Former vs Never) across Cancer Types plt#2") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggplot(smoking_slope_long_3, aes(x = CANCER_TYPE, y = Slope, fill = SMOKING_HISTORY)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Cancer Type", y = "Smoking History Coefficient (Slope)", 
+       title = "Random Slopes of Smoking History (Former vs Never) across Cancer Types plt#3") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggplot(smoking_slope_long_4, aes(x = CANCER_TYPE, y = Slope, fill = SMOKING_HISTORY)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Cancer Type", y = "Smoking History Coefficient (Slope)", 
+       title = "Random Slopes of Smoking History (Former vs Never) across Cancer Types plt#4") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggplot(smoking_slope_long_5, aes(x = CANCER_TYPE, y = Slope, fill = SMOKING_HISTORY)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Cancer Type", y = "Smoking History Coefficient (Slope)", 
+       title = "Random Slopes of Smoking History (Former vs Never) across Cancer Types plt#5") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+```{r}
+## Heat map
+ranef_effects_1 <- ranef(SH_CT_TMB_1)
+ranef_effects_2 <- ranef(SH_CT_TMB_2)
+ranef_effects_3 <- ranef(SH_CT_TMB_3)
+ranef_effects_4 <- ranef(SH_CT_TMB_4)
+ranef_effects_5 <- ranef(SH_CT_TMB_5)
+
+random_effects_df_1 <- as.data.frame(ranef_effects_1$CANCER_TYPE)
+random_effects_df_2 <- as.data.frame(ranef_effects_2$CANCER_TYPE)
+random_effects_df_3 <- as.data.frame(ranef_effects_3$CANCER_TYPE)
+random_effects_df_4 <- as.data.frame(ranef_effects_4$CANCER_TYPE)
+random_effects_df_5 <- as.data.frame(ranef_effects_5$CANCER_TYPE)
+
+random_effects_df_1$cancer_type <- rownames(random_effects_df_1)
+random_effects_df_2$cancer_type <- rownames(random_effects_df_2)
+random_effects_df_3$cancer_type <- rownames(random_effects_df_3)
+random_effects_df_4$cancer_type <- rownames(random_effects_df_4)
+random_effects_df_5$cancer_type <- rownames(random_effects_df_5)
+
+
+random_effects_df_1 <- random_effects_df_1 %>%
+  select(cancer_type, `(Intercept)`, SMOKING_HISTORYFormer, SMOKING_HISTORYNever)
+random_effects_df_2 <- random_effects_df_2 %>%
+  select(cancer_type, `(Intercept)`, SMOKING_HISTORYFormer, SMOKING_HISTORYNever)
+random_effects_df_3 <- random_effects_df_3 %>%
+  select(cancer_type, `(Intercept)`, SMOKING_HISTORYFormer, SMOKING_HISTORYNever)
+random_effects_df_4 <- random_effects_df_4 %>%
+  select(cancer_type, `(Intercept)`, SMOKING_HISTORYFormer, SMOKING_HISTORYNever)
+random_effects_df_5 <- random_effects_df_5 %>%
+  select(cancer_type, `(Intercept)`, SMOKING_HISTORYFormer, SMOKING_HISTORYNever)
+
+random_effects_long_1 <- pivot_longer(random_effects_df_1, cols = -cancer_type, names_to = "Smoking_History", values_to = "Effect_Size")
+random_effects_long_2 <- pivot_longer(random_effects_df_2, cols = -cancer_type, names_to = "Smoking_History", values_to = "Effect_Size")
+random_effects_long_3 <- pivot_longer(random_effects_df_3, cols = -cancer_type, names_to = "Smoking_History", values_to = "Effect_Size")
+random_effects_long_4 <- pivot_longer(random_effects_df_4, cols = -cancer_type, names_to = "Smoking_History", values_to = "Effect_Size")
+random_effects_long_5 <- pivot_longer(random_effects_df_5, cols = -cancer_type, names_to = "Smoking_History", values_to = "Effect_Size")
+
+ggplot(random_effects_long_1, aes(x = cancer_type, y = Smoking_History, fill = Effect_Size)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  theme_minimal() +
+  labs(title = "Heatmap of Random Effects by Cancer Type and Smoking History plt#1", 
+       x = "Cancer Type", 
+       y = "Smoking History", 
+       fill = "Effect Size") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggplot(random_effects_long_2, aes(x = cancer_type, y = Smoking_History, fill = Effect_Size)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  theme_minimal() +
+  labs(title = "Heatmap of Random Effects by Cancer Type and Smoking History plt#2", 
+       x = "Cancer Type", 
+       y = "Smoking History", 
+       fill = "Effect Size") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggplot(random_effects_long_3, aes(x = cancer_type, y = Smoking_History, fill = Effect_Size)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  theme_minimal() +
+  labs(title = "Heatmap of Random Effects by Cancer Type and Smoking History plt#3", 
+       x = "Cancer Type", 
+       y = "Smoking History", 
+       fill = "Effect Size") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggplot(random_effects_long_4, aes(x = cancer_type, y = Smoking_History, fill = Effect_Size)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  theme_minimal() +
+  labs(title = "Heatmap of Random Effects by Cancer Type and Smoking History plt#4", 
+       x = "Cancer Type", 
+       y = "Smoking History", 
+       fill = "Effect Size") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggplot(random_effects_long_5, aes(x = cancer_type, y = Smoking_History, fill = Effect_Size)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  theme_minimal() +
+  labs(title = "Heatmap of Random Effects by Cancer Type and Smoking History plt#5", 
+       x = "Cancer Type", 
+       y = "Smoking History", 
+       fill = "Effect Size") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+From the Forest plots over all the imputed data sets, we can see that the effect of Smoking History varies across different cancer types. The effect can be significantly larger on some specific cancer type.
+
+From the heat maps over all the imputed data sets, we can see the effect of Smoking History on Non-Small Cell Lung Cancer is specifically significant compared with the one on other cancer. Compared to current smokers, the former smokers and people who never smoked have a significant negative effect on transformed TMB.
+
+# Discussion & Conclusion
+
+    This study investigated the effects of demographic, clinical, and genomic factors on two important indicators of tumor genome alterations: Tumor Mutation Burden (TMB) and Fraction of Genome Altered (FGA). Through the application of mixed-effects models across five imputed datasets, both fixed and random effects were analyzed to assess the variability at the patient, cancer type, and study levels. The models provided insights into how age, sex, race, tumor purity, and smoking history influence TMB and FGA. We also compared the differences in model fit and interpretability across various hierarchical structures of random effects. Special attention was given to the interaction between smoking history and cancer type, analyzing how this interaction influences variations in TMB.
+
+    Despite testing various model combinations, including nested and crossed random effects, we ultimately found that models retaining the crossed structure for patient ID, study, and cancer type as random effects performed best. This model demonstrated better fit according to AIC and BIC metrics, with a conditional R-squared of 0.853 (for TMB) and 0.793 (for FGA), indicating that it effectively explains the variability in genomic alterations.
+
+     It is important to note that during the model diagnostics, the residuals for both the FGA and TMB models did not follow a perfectly normal distribution. The Q-Q plots showed some degree of deviation at the tails, indicating that our models still exhibit a certain level of bias. Therefore, in future research, we will explore additional modeling approaches to achieve better fit, including models based on alternative distributional assumptions or Bayesian models.
+
+     For TMB, the fixed-effects analysis revealed that sex has a significant effect, indicating that male patients tend to have higher TMB values than females. Smoking history was also found to significantly influence TMB, with former smokers showing lower TMB compared to current-smokers and the never-smoker showing the lowest TMB. Tumor purity had a positive and significant association with TMB, suggesting that purer tumor samples have higher mutation burdens. Notably, race and age did not demonstrate a significant effect on TMB. The random effects showed considerable variance at the patient and cancer type levels, reflecting the heterogeneity of TMB within and across different cancer types.
+
+     For FGA, the fixed-effects analysis showed that tumor purity was positively and significantly associated with FGA, consistent with the biological expectation that purer tumors exhibit higher fractions of genome alteration. However, age, sex, and race did not have significant effects on FGA. Smoking history, while not significant for former-smokers compared to current smoker, but the never smokers showed a significant lower TMB. In terms of random effects, the variance was predominantly observed at the patient level, while cancer type and study contributed only modestly to the variation in FGA.
+
+     The random effects in both models highlight substantial patient-level variability for TMB and FGA, underscoring the importance of individualized approaches in cancer genomic studies. Differences across cancer types were more pronounced for TMB than for FGA, suggesting that the biological processes driving mutation burden are more cancer-type specific, while genome alteration may be driven by more patient-specific factors.
+
+     Additionally, further analysis revealed that the effect of smoking history on transformed TMB varies significantly across different cancer types, with distinct directions and magnitudes in certain cancers. In particular, for Non-Small Cell Lung Cancer (NSCLC), smoking history showed a highly significant effect. Current smoking had a strong positive influence on TMB, while never smoking exhibited a strong negative effect. This highlights the heterogeneity in the relationship between smoking history and TMB across cancer types, with NSCLC demonstrating especially unique patterns.
+
+     In summary, TMB is largely influenced by patient sex, tumor purity, and smoking history, with significant variability between patients and cancer types. On the other hand, FGA shows more variability at the patient level and is most strongly associated with tumor purity. These findings suggest that while TMB and FGA are both key genomic indicators, they are influenced by distinct biological and clinical factors, and their variability is shaped differently across patient and cancer type levels. This study revealed the associations between clinical factors and different measurements of genomic alterations. These findings provide deeper insights into how clinical characteristics influence genomic alterations across cancer types, supporting personalized approaches in cancer treatment.
+
+# Bibliography
+
+Bladder Urothelial Carcinoma (TCGA, Firehose Legacy). (2020, September 15). Mskcc.org. 
+https://datacatalog.mskcc.org/dataset/10466
+Boerner, T., Drill, E., Pak, L. M., Nguyen, B., Sigel, C. S., Alexandre Doussot, Shin, P., Goldman, D. A., Mithat 
+Gönen, Allen, P. J., Balachandran, V. P., Cercek, A., Harding, J. J., Solit, D. B., Schultz, N., Kundra, R.,
+Walch, H., D’Angelica, M. I., DeMatteo, R. P., & Drebin, J. A. (2021). Genetic Determinants of Outcome 
+in Intrahepatic Cholangiocarcinoma. Hepatology, 74(3), 1429–1444. https://doi.org/10.1002/hep.31829
+cBioPortal for Cancer Genomics. (n.d.). Www.cbioportal.org. https://www.cbioportal.org/
+Cercek, A., Chatila, W. K., Yaeger, R., Walch, H., Dos, G., Krishnan, A., Lerie Palmaira, Maio, A., Kemel, Y., 
+Srinivasan, P., Chaitanya Bandlamudi, Salo-Mullen, E. E., Prince Rainier Tejada, Kimeisha Belanfanti, 
+Galle, J., Vijai, J., Segal, N. H., Varghese, A. M., Diane Lauren Reidy, & Shia, J. (2021). A Comprehensive 
+Comparison of Early-Onset and Average-Onset Colorectal Cancers. 113(12), 1683–1692. 
+https://doi.org/10.1093/jnci/djab124
+Cervical Squamous Cell Carcinoma and Endocervical Adenocarcinoma. (2020, October 20). Mskcc.org. 
+https://datacatalog.mskcc.org/dataset/10476
+Kidney Renal Papillary Cell Carcinoma (TCGA, Firehose Legacy). (2020, October 27). Mskcc.org. 
+https://datacatalog.mskcc.org/dataset/10480
+PanCanAtlas Publications | NCI Genomic Data Commons. (n.d.). Gdc.cancer.gov. https://gdc.cancer.gov/about-
+data/publications/pancanatlas
+Samstein, R. M., Lee, C.-H., Shoushtari, A. N., Hellmann, M. D., Shen, R., Janjigian, Y. Y., Barron, D. A., Zehir, A., 
+Jordan, E. J., Omuro, A., Kaley, T. J., Kendall, S. M., Motzer, R. J., Hakimi, A. A., Voss, M. H., Russo, P., 
+Rosenberg, J., Iyer, G., Bochner, B. H., & Bajorin, D. F. (2019). Tumor mutational load predicts survival 
+after immunotherapy across multiple cancer types. Nature Genetics, 51(2), 202–206. 
+https://doi.org/10.1038/s41588-018-0312-8
+Seldon, C., Karthik Meiyappan, Hoffman, H. I., Guo, J. A., Goel, N., Hwang, W. L., Nguyen, P. L., Mahal, B. A., & 
+Alshalalfa, M. (2022). Genomic alterations predictive of poor clinical outcomes in pan-
+cancer. Oncotarget, 13(1), 1069–1077. https://doi.org/10.18632/oncotarget.28276
+Smith, J., Parl, F. F., & Dupont, W. D. (2023). Mutation Burden Independently Predicts Survival in the Pan-Cancer
+Atlas. 7. https://doi.org/10.1200/po.22.00571
+The Pan-Cancer Atlas. (2013). Cell.com. https://www.cell.com/pb-
+assets/consortium/PanCancerAtlas/PanCani3/index.html
+Uterine Corpus Endometrial Carcinoma (TCGA, Firehose Legacy). (2020, November 19). Mskcc.org. 
+https://datacatalog.mskcc.org/dataset/10494
+ Wang, L.-B., Karpova, A., Gritsenko, M. A., Kyle, J. E., Cao, S., Li, Y., Rykunov, D., Colaprico, A., Rothstein, J. H., 
+Hong, R., Stathias, V., Cornwell, M., Petralia, F., Wu, Y., Reva, B., Krug, K., Pugliese, P., Kawaler, E., 
+Olsen, L. K., & Liang, W.-W. (2021). Proteogenomic and metabolomic characterization of human 	
+glioblastoma. Cancer Cell, 39(4), 509-528.e20. https://doi.org/10.1016/j.ccell.2021.01.006
+ Wan, L., Wang, Z., Xue, J., Yang, H., & Zhu, Y. (2020). Tumor mutation burden predicts response and survival to 
+immune checkpoint inhibitors: a meta-analysis. Translational Cancer Research, 9(9), 5437–5449. 
+https://doi.org/10.21037/tcr-20-1131
