@@ -1,0 +1,1575 @@
+---
+title: "BMI Dataset"
+author: "Amanda Carrico"
+date: "2024-05-29"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: 2
+    number_sections: no
+    theme: cerulean
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+  word_document:
+    toc: no
+  pdf_document:
+    toc: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(knitr)
+library(tableone)
+library(kableExtra)
+library(table1)
+library(survival)
+library(km.ci)
+library(ranger)
+library(dplyr)
+library(GGally)
+library(survminer)
+library(flexsurv)
+library(rms)
+library(ggplot2)
+library(multcomp)
+library(BTKR)
+library(nortest)
+```
+
+In combinations:
+Abdomen - abdominal wall, stomach, large intestine(colon), small intestine (jejunum and ileum), liver, spleen, gallbladder, pancreas, uterus, fallopian tubes, ovaries, kidneys, ureters, bladder, blood vessels, bile duct
+paragolic gutter - space between colon and abdominal wall
+
+*omentum is in abdomen (fatty tissue in stomach and drapes over intestines), peritoneum membrane that lines abdominal cavirty
+messentery connects intestines to stomach (membrane comprises the double fold of the peritoneum)
+falciform ligament connects liver abdomen, gastrocolic ligament (could put together as ligaments), 
+- peritoneum contains omentum, ligaments, and mesentery
+
+pleura line chest and cover lungs (fluid between lungs and wall of chest cavity is pleural fluid), mediastinum is space in chest that contains heart
+
+Bowel - intestines (small intestines - duodenum, ileum, jejunum -, cecum, colon, rectum, anal cavity) in general
+
+adnexa or endomterium refering to overies, fallopian tubes, uterus
+
+epidural and sacral mass to spine
+
+
+
+manubrium - bone (top portion), rib, skull base (?), sacrum (sacral mass)
+
+*make not applicable unknown
+
+decide if want to split GE junction and gastric (depends on how specific we get with abdomen)
+is sacrum spine or bone
+
+
+peritoneum = abdominal wall
+
+# Load in data (put together any dataset with BMI that had over 100-200 patients)
+
+## Bladder Urothelial Carcinoma TCGA/Firehose Legacy
+Smoking:
+Lifelong Non-smoker (less than 100 cigarettes smoked in Lifetime) = 1
+Current smoker (includes daily smokers and non-daily smokers or occasional smokers) = 2
+Current reformed smoker for > 15 years (greater than 15 years) = 3
+Current reformed smoker for ≤15 years (less than or equal to 15 years) = 4
+```{r}
+Bladder_data_clinical <- read_csv("Bladder Urothelial_data_clinical_patient.csv")
+bladder_data_patient <- Bladder_data_clinical %>% dplyr::select(PATIENT_ID, WEIGHT, HEIGHT, SEX, RACE, ETHNICITY, SITE_OF_TUMOR_TISSUE, METASTATIC_SITE_PATIENT, TOBACCO_SMOKING_HISTORY_INDICATOR, SMOKING_PACK_YEARS, AGE, OS_STATUS, OS_MONTHS) %>% mutate(BMI = as.numeric(WEIGHT)/(as.numeric(HEIGHT)/100)^2, OS_STATUS = ifelse(OS_STATUS == "1:DECEASED", 1, 0), METASTATIC_SITE_PATIENT = ifelse(METASTATIC_SITE_PATIENT == "[Not Available]" | METASTATIC_SITE_PATIENT == "None", NA, ifelse(METASTATIC_SITE_PATIENT == "Lymph node only", "Lymph Node", METASTATIC_SITE_PATIENT)), RACE = ifelse(RACE == "[Not Available]", NA, ifelse(RACE == "ASIAN", "Asian", RACE)), SEX = ifelse(SEX == "[Not Available]", NA, SEX), ETHNICITY = ifelse(ETHNICITY == "[Not Available]", NA, ETHNICITY), SMOKING_HISTORY = ifelse(TOBACCO_SMOKING_HISTORY_INDICATOR == "[Not Available]", NA, ifelse(TOBACCO_SMOKING_HISTORY_INDICATOR == "1", "Never", ifelse(TOBACCO_SMOKING_HISTORY_INDICATOR == "2", "Current", "Former"))), SMOKING_PACK_YEARS = ifelse(SMOKING_PACK_YEARS == "[Not Available]", NA, SMOKING_PACK_YEARS))
+  
+bladder_data_patient <- bladder_data_patient %>% dplyr::select(-c(WEIGHT, HEIGHT, TOBACCO_SMOKING_HISTORY_INDICATOR)) %>% mutate(BMI_CATEGORIES = ifelse(BMI < 18.5, "Underweight", ifelse(BMI < 25, "Normal_Weight", ifelse(BMI < 30, "Overweight", "Obese"))))
+
+
+Bladder_data_sample <- read_csv("Bladder Urothelial_data_clinical_sample.csv")
+Bladder_data_sample <- Bladder_data_sample %>% dplyr::select(PATIENT_ID, SAMPLE_ID, CANCER_TYPE, TMB_NONSYNONYMOUS) %>% group_by(PATIENT_ID) %>% mutate(Code_frequency= n(), TMB = TMB_NONSYNONYMOUS, Study = "Bladder Urothelial Carcinoma TCGA/Firehose Legacy", TUMOR_PURITY = NA, CANCER_TYPE = ifelse(CANCER_TYPE == "[Not Available]", NA, CANCER_TYPE)) %>% dplyr::select(-TMB_NONSYNONYMOUS)
+Bladder_data <- merge(bladder_data_patient, Bladder_data_sample, by = c("PATIENT_ID")) %>% filter(!(PATIENT_ID == "TCGA-DK-A1A6" & TMB == NA))
+
+head(Bladder_data) 
+```
+
+## Glioblastoma CPTAC/Cell 2021
+```{r}
+Glioblastoma_data_clinical <- read_csv("Glioblastoma_data_clinical_patient.csv")
+Glioblastoma_data_clinical <- Glioblastoma_data_clinical %>% dplyr::select(PATIENT_ID, BMI, AGE, SEX, RACE, ETHNICITY, VITAL_STATUS, FOLLOW_UP_PERIOD, SMOKING_HISTORY) %>% mutate(OS_STATUS = ifelse(VITAL_STATUS == "Deceased", 1, 0), OS_MONTHS = substr(FOLLOW_UP_PERIOD, 1,2), RACE = ifelse(RACE == "[Not Available]", NA, ifelse(RACE == "White", "WHITE", RACE)), SMOKING_PACK_YEARS = NA, SEX = ifelse(SEX == "[Not Available]", NA, SEX), ETHNICITY = ifelse(ETHNICITY == "[Not Available]", NA, ifelse(ETHNICITY == "Hispanic or Latino", "HISPANIC OR LATINO", ifelse(ETHNICITY == "Not-Hispanic or Latino", "NOT HISPANIC OR LATINO", ETHNICITY))), SMOKING_HISTORY = ifelse(SMOKING_HISTORY == "Current reformed smoker within past 15 years" | SMOKING_HISTORY == "Current reformed smoker, more than 15 years", "Former", ifelse(SMOKING_HISTORY == "Current smoker: Includes daily and non-daily smokers", "Current", ifelse(SMOKING_HISTORY == "Lifelong non-smoker: Less than 100 cigarettes smoked in lifetime", "Never", SMOKING_HISTORY))), BMI_CATEGORIES = ifelse(BMI < 18.5, "Underweight", ifelse(BMI < 25, "Normal_Weight", ifelse(BMI < 30, "Overweight", "Obese")))) %>% dplyr::select(-c(FOLLOW_UP_PERIOD, VITAL_STATUS))
+
+
+Glioblastoma_data_sample <- read_csv("Glioblastoma_data_clinical_sample.csv")
+Glioblastoma_data_sample <- Glioblastoma_data_sample %>% dplyr::select(PATIENT_ID, SAMPLE_ID, CANCER_TYPE, TMB_NONSYNONYMOUS) %>% mutate(TMB = TMB_NONSYNONYMOUS, SITE_OF_TUMOR_TISSUE = "Brain", Study = "Glioblastoma CPTAC/Cell 2021", METASTATIC_SITE_PATIENT = NA, CANCER_TYPE = ifelse(CANCER_TYPE == "[Not Available]", NA, CANCER_TYPE)) %>% dplyr::select(-c(TMB_NONSYNONYMOUS)) %>% group_by(PATIENT_ID) %>% mutate(Code_frequency= n(), TUMOR_PURITY = NA) # checked and no patients with multiple samples
+
+Glioblastoma_data <- merge(Glioblastoma_data_clinical, Glioblastoma_data_sample, by = c("PATIENT_ID"))
+
+head(Glioblastoma_data)
+```
+
+## Colorectal Cancer MSK/JNCI 2021
+Abdomen wall and abdomen combined (should pelvis also be grouped into abdomen) 
+```{r}
+Colorectal_data_clinical <- read_csv("Colorectal_data_clinical_patient.csv")
+Colorectal_data_clinical <- Colorectal_data_clinical %>% dplyr::select(PATIENT_ID, BMI, RACE, SEX, AGE_AT_DX, OS_MET_STATUS, OS_MET_MONTHS, SMOKING_HISTORY) %>% mutate(OS_STATUS = ifelse(OS_MET_STATUS == "1:DECEASED", 1, 0), OS_MONTHS = OS_MET_MONTHS, AGE = AGE_AT_DX, ETHNICITY = NA, RACE = ifelse(RACE == "[Not Available]", NA, ifelse(RACE == "ASIAN-FAR EAST/INDIAN SUBCONT", "Asian", ifelse(RACE == "UNKNOWN_OTHER", "Other", ifelse(RACE == "NATIVE AMERICAN-AM IND/ALASKA", "AMERICAN INDIAN OR ALASKA NATIVE", RACE)))), SEX = ifelse(SEX == "[Not Available]", NA, SEX), SMOKING_PACK_YEARS = NA, BMI_CATEGORIES = ifelse(BMI < 18.5, "Underweight", ifelse(BMI < 25, "Normal_Weight", ifelse(BMI < 30 , "Overweight", "Obese")))) %>% dplyr::select(-c(AGE_AT_DX, OS_MET_MONTHS, OS_MET_STATUS)) # met status and months also contained - survival from diagnosis of METS (but not the primary)
+
+Colorectal_data_sample <- read_csv("Colorectal_data_clinical_sample.csv")
+#Colorectal_data_sample %>% select(SAMPLE_ID, PATIENT_ID, PRIMARY_TUMOR_LOCATION, CANCER_TYPE, METASTATIC_SITE, CVR_TMB_SCORE, TUMOR_PURITY) %>% group_by(PATIENT_ID) %>% mutate(Code_frequency= n())  #checked and no multiple patients
+
+Colorectal_data_sample <- Colorectal_data_sample %>% dplyr::select(SAMPLE_ID, PATIENT_ID, PRIMARY_TUMOR_LOCATION, METASTATIC_SITE, CANCER_TYPE, CVR_TMB_SCORE, TUMOR_PURITY) %>% group_by(PATIENT_ID) %>% mutate(Code_frequency= n(), TMB = CVR_TMB_SCORE, CANCER_TYPE = ifelse(CANCER_TYPE == "[Not Available]", NA, CANCER_TYPE), SITE_OF_TUMOR_TISSUE = PRIMARY_TUMOR_LOCATION, Study = "Colorectal Cancer MSK/JNCI 2021", METASTATIC_SITE_PATIENT = ifelse(METASTATIC_SITE == "Not available", NA, ifelse(METASTATIC_SITE == "Adrenal", "Adrenal Gland", ifelse(METASTATIC_SITE == "liver", "Liver", ifelse(METASTATIC_SITE == "Lymph node", "Lymph Node", ifelse(METASTATIC_SITE == "Peritonuem" | METASTATIC_SITE == "Peritoneal Fluid" | METASTATIC_SITE == "Peritoneal Implant", "Peritoneum", ifelse(METASTATIC_SITE == "Left Frontal Brain" | METASTATIC_SITE == "Cerebellum", "Brain", ifelse(METASTATIC_SITE == "Abdominal Wall", "Abdomen", ifelse(METASTATIC_SITE == "Pelvic Nodule", "Pelvis", ifelse(METASTATIC_SITE == "Sigmoid Colon", "Colon", METASTATIC_SITE)))))))))) %>% dplyr::select(-c(PRIMARY_TUMOR_LOCATION, CVR_TMB_SCORE, METASTATIC_SITE))
+
+Colorectal_data <- merge(Colorectal_data_clinical, Colorectal_data_sample, by = c("PATIENT_ID"))
+
+head(Colorectal_data)
+```
+
+## Esophagogastric Cancer MSK/J Natl Cancer Inst 20
+gastrointestinal all grouped into one
+grouped by primary tumor site so perhaps this should all just be esophagogastric cancer type with the sites specified
+PLEURAL fluid and pleura
+```{r}
+Esophagogastric_data_clinical <- read_csv("Esophagogastric_data_clinical_patient.csv")
+
+Esophagogastric_data_clinical <- Esophagogastric_data_clinical %>% dplyr::select(PATIENT_ID, AGE_AT_DIAGNOSIS, OS_STATUS, OS_MONTHS, BMI_CATEGORIES, SEX, RACE, ETHNICITY) %>% mutate(BMI = NA, BMI_CATEGORIES = ifelse(BMI_CATEGORIES == "Unknown", NA, BMI_CATEGORIES), RACE = ifelse(RACE == "[Not Available]", NA, ifelse(RACE == "White", "WHITE", ifelse(RACE == "Black or African AMERICAN", "BLACK OR AFRICAN AMERICAN", RACE))), SEX = ifelse(SEX == "[Not Available]", NA, SEX), ETHNICITY = ifelse(ETHNICITY == "[Not Available]", NA, ifelse(ETHNICITY == "Not Hispanic or Latino", "NOT HISPANIC OR LATINO", ifelse(ETHNICITY == "Hispanic or Latino", "HISPANIC OR LATINO", ifelse(ETHNICITY == "not reported", "Unknown", ETHNICITY)))), SMOKING_HISTORY = NA, SMOKING_PACK_YEARS = NA, OS_STATUS = ifelse(OS_STATUS == "1:DECEASED", 1, 0), AGE = AGE_AT_DIAGNOSIS) %>% dplyr::select(-AGE_AT_DIAGNOSIS) # could not find cutoffs for BMI categories
+
+Esophagogastric_data_sample <- read_csv("Esophagogastric_data_clinical_sample.csv")
+
+Esophagogastric_data_sample <- Esophagogastric_data_sample %>% dplyr::select(PATIENT_ID, SAMPLE_ID, TMB_NONSYNONYMOUS, PRIMARY_SITE, METASTATIC_SITE, TUMOR_PURITY, TMB_NONSYNONYMOUS) %>% mutate(SITE_OF_TUMOR_TISSUE = PRIMARY_SITE, TMB = TMB_NONSYNONYMOUS, CANCER_TYPE = "Esophagogastric", METASTATIC_SITE_PATIENT = ifelse(METASTATIC_SITE == "Not Applicable", NA, ifelse(METASTATIC_SITE == "Adrenal", "Adrenal Gland", ifelse(METASTATIC_SITE == "Lymph node", "Lymph Node", ifelse(METASTATIC_SITE == "Peritoneal Fluid" | METASTATIC_SITE == "Peritoneal Implant", "Peritoneum", ifelse(METASTATIC_SITE == "Abdominal Wall", "Abdomen", ifelse(METASTATIC_SITE == "Ascending Colon", "Colon", ifelse(METASTATIC_SITE == "Vertebrate", "Spine", METASTATIC_SITE)))))))) %>% dplyr::select(-c(PRIMARY_SITE, TMB_NONSYNONYMOUS, METASTATIC_SITE)) %>% group_by(PATIENT_ID) %>% mutate(Code_frequency= n(), Study = "Esophagogastric Cancer MSK/J Natl Cancer Inst 2023") 
+
+# checked and no multiple samples - filter Code_frequency > 1
+
+Esophagogastric_data <- merge(Esophagogastric_data_clinical, Esophagogastric_data_sample, by = c("PATIENT_ID"))
+
+head(Esophagogastric_data)
+```
+
+## Hepatocellular Carcinoma (MSK 2023)
+```{r}
+Hepatocellular <- read_csv("Hepatocellular Carcinoma.csv") # no option to download full file
+# `Fraction Genome Altered` can be added after figure out what to do about others
+Hepatocellular_data <- Hepatocellular %>% dplyr::select(`Patient ID`, `Sample ID`, `Cancer Type`, BMI, Age, Race, Sex, Ethnicity, `Metastatic Site`, `Overall Survival (Months)`, `Overall Survival Status`, `Primary Tumor Site`, `TMB (nonsynonymous)`, `Tumor Purity`, `Fraction Genome Altered`) %>% mutate(PATIENT_ID = `Patient ID`, SAMPLE_ID = `Sample ID`, SEX = Sex, RACE = ifelse(Race == "[Not Available]", NA, ifelse(Race == "White", "WHITE", ifelse(Race == "Black", "BLACK OR AFRICAN AMERICAN", Race))), ETHNICITY = ifelse(Ethnicity == "Non-Spanish; Non-Hispanic" | Ethnicity == "South/Central America (except Brazil)" | Ethnicity == "Dominican Republic" | Ethnicity == "Cuban" | Ethnicity == "Other Spanish/Hispanic(incl European; excl Dom Rep" | Ethnicity == "Puerto Rican", "NOT HISPANIC OR LATINO", ifelse(Ethnicity == "Spanish  NOS; Hispanic NOS, Latino NOS", "HISPANIC OR LATINO", ifelse(Ethnicity == "Unknown whether Spanish or not", "Unknown", Ethnicity))), BMI_CATEGORIES = ifelse(BMI < 18.5, "Underweight", ifelse(BMI < 25, "Normal_Weight", ifelse(BMI < 30, "Overweight", "Obese"))), OS_STATUS = ifelse(`Overall Survival Status` == "1:DECEASED", 1, 0), OS_MONTHS = `Overall Survival (Months)`, SMOKING_HISTORY = NA, SMOKING_PACK_YEARS = NA, CANCER_TYPE = `Cancer Type`, SITE_OF_TUMOR_TISSUE = ifelse(`Primary Tumor Site` == "Bile duct", "Bile Duct", ifelse(`Primary Tumor Site` == "gallbladder", "Gallbladder", ifelse(`Primary Tumor Site` == "Cancer of Unknown Primary", "Unknown", `Primary Tumor Site`))), FGA = `Fraction Genome Altered`, AGE = Age, TMB = `TMB (nonsynonymous)`, TUMOR_PURITY = `Tumor Purity`, TMB = `TMB (nonsynonymous)`, METASTATIC_SITE_PATIENT = ifelse(`Metastatic Site` == "Not Applicable", NA, ifelse(`Metastatic Site` == "Adrenal", "Adrenal Gland", ifelse(`Metastatic Site` == "liver", "Liver", ifelse(`Metastatic Site` == "Lymph node", "Lymph Node", ifelse(`Metastatic Site` == "Peritoneal Implant", "Peritoneum", ifelse(`Metastatic Site` == "Spine (bone)", "Spine", ifelse(`Metastatic Site` == "Soft Tissue (abdominal wall)" | `Metastatic Site` == "Abdominal Wall", "Abdomen", `Metastatic Site`))))))), Study = "Hepatocellular Carcinoma (MSK 2023)")  %>% dplyr::select(-c(`Patient ID`, `Sample ID`, `Cancer Type`, Age, `Metastatic Site`, `Overall Survival (Months)`, `Overall Survival Status`, Sex, Race, Ethnicity, `Primary Tumor Site`, `TMB (nonsynonymous)`, `Tumor Purity`, `Fraction Genome Altered`)) %>% group_by(PATIENT_ID) %>% mutate(Code_frequency= n())
+
+Hepatocellular_data <- data.frame(Hepatocellular_data)
+
+#hepato_samples <- Hepatocellular_data %>% group_by(PATIENT_ID) %>% mutate(Code_frequency= n()) %>% select()
+
+head(Hepatocellular_data)
+```
+
+Problem: only see fraction genome altered when download the set from select on site (not seen when combine the two files in the official folder - I thought perhaps it was under a different variable name but checked and not found)
+
+
+## Cervical Squamous Cell Carcinoma and Endocervical Adenocarcinoma (TCGA, Firehose Legacy)
+
+```{r}
+cervical_clinical_patient <- read_csv("cervical_data_clinical_patient.csv")
+
+cervical_clinical_patient <- cervical_clinical_patient %>% dplyr::select(PATIENT_ID, SEX, HEIGHT, WEIGHT, RACE, ETHNICITY, AGE, SITE_OF_TUMOR_TISSUE, OS_STATUS, OS_MONTHS, TOBACCO_SMOKING_HISTORY_INDICATOR, SMOKING_PACK_YEARS) %>% mutate(BMI = as.numeric(WEIGHT)/(as.numeric(HEIGHT)/100)^2, BMI_CATEGORIES = ifelse(BMI < 18.5, "Underweight", ifelse(BMI < 25, "Normal_Weight", ifelse(BMI < 30, "Overweight", "Obese"))), METASTATIC_SITE_PATIENT = NA, SMOKING_PACK_YEARS = ifelse(SMOKING_PACK_YEARS == "[Not Available]", NA, SMOKING_PACK_YEARS), SMOKING_HISTORY = ifelse(TOBACCO_SMOKING_HISTORY_INDICATOR == "[Not Available]", NA, ifelse(TOBACCO_SMOKING_HISTORY_INDICATOR == "1", "Never", ifelse(TOBACCO_SMOKING_HISTORY_INDICATOR == "2", "Current", "Former"))), TUMOR_PURITY = NA, RACE = ifelse(RACE == "[Not Available]", NA, ifelse(RACE == "ASIAN", "Asian", RACE)), SEX = ifelse(SEX == "[Not Available]", NA, SEX), ETHNICITY = ifelse(ETHNICITY == "[Not Available]", NA, ETHNICITY), Study = "Cervical Squamous Cell Carcinoma and Endocervical Adenocarcinoma (TCGA, Firehose Legacy)", OS_STATUS = ifelse(OS_STATUS == "1:DECEASED", 1, 0)) %>% dplyr::select(-c(HEIGHT, WEIGHT, TOBACCO_SMOKING_HISTORY_INDICATOR))
+
+cervical_clinical_sample <- read_csv("cervical_data_clinical_sample.csv")
+
+cervical_clinical_sample <- cervical_clinical_sample %>% dplyr::select(PATIENT_ID, SAMPLE_ID, CANCER_TYPE, TMB_NONSYNONYMOUS) %>% group_by(PATIENT_ID) %>% mutate(TMB = TMB_NONSYNONYMOUS, Code_frequency= n(), CANCER_TYPE = ifelse(CANCER_TYPE == "[Not Available]", NA, CANCER_TYPE)) %>% dplyr::select(-TMB_NONSYNONYMOUS)
+
+cervical_data <- merge(cervical_clinical_patient, cervical_clinical_sample, by = "PATIENT_ID") %>% filter(!(PATIENT_ID == "TCGA-HM-A6W2" & CANCER_TYPE == "Cervical Cancer, NOS" | PATIENT_ID == "TCGA-UC-A7PG" & CANCER_TYPE == "Cervical Cancer, NOS"))
+head(cervical_data)
+# same patient, different cancer type - two cases of this where one is a more specific form of cancer perhaps diagnosed later but all other numbers are the same
+```
+
+## Intrahepatic Cholangiocarcinoma (MSK, Hepatology 2021)
+
+```{r}
+Cholangiocarcinoma_patient <- read_csv("Cholangiocarcinoma_data_clinical_patient.csv")
+Cholangiocarcinoma_patient <- Cholangiocarcinoma_patient %>% dplyr::select(PATIENT_ID, AGE, SEX, BMI, OS_MONTHS, OS_STATUS, SMOKING_STATUS) %>% mutate(BMI_CATEGORIES = ifelse(BMI < 18.5, "Underweight", ifelse(BMI < 25, "Normal_Weight", ifelse(BMI < 30, "Overweight", "Obese"))), RACE = NA, TUMOR_PURITY = NA, SEX = ifelse(SEX == "[Not Available]", NA, SEX), ETHNICITY = NA, SITE_OF_TUMOR_TISSUE = "intrahepatic cholangiocarcinoma", METASTATIC_SITE_PATIENT = NA, CANCER_TYPE = "Liver", OS_STATUS = ifelse(OS_STATUS == "1:DECEASED", 1, 0), SMOKING_HISTORY = ifelse(SMOKING_STATUS == "Current smoker", "Current", ifelse(SMOKING_STATUS == "Former smoker", "Former", ifelse(SMOKING_STATUS == "Never smoked", "Never", SMOKING_STATUS))), SMOKING_PACK_YEARS = NA, Study = "Intrahepatic Cholangiocarcinoma (MSK, Hepatology 2021)") %>% dplyr::select(-SMOKING_STATUS)
+
+
+Cholangiocarcinoma_sample <- read_csv("Cholangiocarcinoma_data_clinical_sample.csv")
+Cholangiocarcinoma_sample <- Cholangiocarcinoma_sample %>% dplyr::select(PATIENT_ID, SAMPLE_ID, TMB_NONSYNONYMOUS) %>% mutate(TMB = TMB_NONSYNONYMOUS) %>% dplyr::select(-TMB_NONSYNONYMOUS) %>% group_by(PATIENT_ID) %>% mutate(Code_frequency= n()) # none with more than one sample
+
+Cholangiocarcinoma_data <- merge(Cholangiocarcinoma_patient, Cholangiocarcinoma_sample, by = "PATIENT_ID")
+head(Cholangiocarcinoma_data)
+
+# NOTICED LATER: many similarities with previous dataset and other dataset has more info (otherwise same when include info in this study - for about 200 cases)
+same_liver_patients <- merge(Hepatocellular_data, Cholangiocarcinoma_data, by = "PATIENT_ID")
+
+Cholangiocarcinoma_data <- Cholangiocarcinoma_data %>% filter(!(PATIENT_ID %in% same_liver_patients$PATIENT_ID))
+```
+
+## Kidney Renal Papillary Cell Carcinoma (TCGA, Firehose Legacy)
+
+```{r}
+kidney_patient <- read_csv("kidney_data_clinical_patient.csv")
+kidney_patient <- kidney_patient %>% dplyr::select(PATIENT_ID, SEX, RACE, ETHNICITY, AGE, OS_STATUS, OS_MONTHS, SITE_OF_TUMOR_TISSUE, HEIGHT, WEIGHT, SMOKING_PACK_YEARS, TOBACCO_SMOKING_HISTORY_INDICATOR) %>% mutate(BMI = as.numeric(WEIGHT)/(as.numeric(HEIGHT)/100)^2, BMI_CATEGORIES = ifelse(BMI < 18.5, "Underweight", ifelse(BMI < 25, "Normal_Weight", ifelse(BMI < 30, "Overweight", "Obese"))), RACE = ifelse(RACE == "[Not Available]", NA, ifelse(RACE == "ASIAN", "Asian", RACE)), SEX = ifelse(SEX == "[Not Available]", NA, SEX), ETHNICITY = ifelse(ETHNICITY == "[Not Available]", NA, ETHNICITY), OS_STATUS = ifelse(OS_STATUS == "1:DECEASED", 1, 0), SMOKING_PACK_YEARS = ifelse(SMOKING_PACK_YEARS == "[Not Available]", NA, SMOKING_PACK_YEARS), SMOKING_HISTORY = ifelse(TOBACCO_SMOKING_HISTORY_INDICATOR == "[Not Available]", NA, ifelse(TOBACCO_SMOKING_HISTORY_INDICATOR == "1", "Never", ifelse(TOBACCO_SMOKING_HISTORY_INDICATOR == "2", "Current", "Former"))), Study = "Kidney Renal Papillary Cell Carcinoma (TCGA, Firehose Legacy)", TUMOR_PURITY = NA, METASTATIC_SITE_PATIENT = NA) %>% dplyr::select(-c(HEIGHT, WEIGHT, TOBACCO_SMOKING_HISTORY_INDICATOR))
+
+kidney_sample <- read_csv("kidney_data_clinical_sample.csv")
+kidney_sample <- kidney_sample %>% dplyr::select(PATIENT_ID, SAMPLE_ID, CANCER_TYPE, TMB_NONSYNONYMOUS) %>% mutate(TMB = TMB_NONSYNONYMOUS, CANCER_TYPE = ifelse(CANCER_TYPE == "[Not Available]", NA, CANCER_TYPE)) %>% dplyr::select(-TMB_NONSYNONYMOUS) %>% group_by(PATIENT_ID) %>% mutate(Code_frequency= n()) %>% filter(!(PATIENT_ID == "TCGA-UZ-A9PS" & is.na(TMB) == TRUE)) # one sample same patient but no other TMB/different data
+
+kidney_data <- merge(kidney_patient, kidney_sample, by = "PATIENT_ID")
+head(kidney_data)
+```
+
+## Skin Cutaneous Melanoma (TCGA, PanCancer Atlas)
+
+```{r}
+skin_patient <- read_csv("skin_data_clinical_patient.csv")
+skin_patient <- skin_patient %>% dplyr::select(PATIENT_ID, SEX, HEIGHT, WEIGHT, RACE, ETHNICITY, AGE, METASTATIC_SITE_PATIENT, TUMOR_SITE, OS_STATUS, OS_MONTHS) %>% mutate(BMI = as.numeric(WEIGHT)/(as.numeric(HEIGHT)/100)^2, BMI_CATEGORIES = ifelse(BMI < 18.5, "Underweight", ifelse(BMI < 25, "Normal_Weight", ifelse(BMI < 30, "Overweight", "Obese"))), RACE = ifelse(RACE == "[Not Available]", NA, ifelse(RACE == "ASIAN", "Asian", RACE)), SEX = ifelse(SEX == "[Not Available]", NA, SEX), ETHNICITY = ifelse(ETHNICITY == "[Not Available]", NA, ETHNICITY), OS_STATUS = ifelse(OS_STATUS == "1:DECEASED", 1, 0), METASTATIC_SITE_PATIENT =  ifelse(METASTATIC_SITE_PATIENT == "[Not Available]", NA, ifelse(METASTATIC_SITE_PATIENT == "abdomen" | METASTATIC_SITE_PATIENT == "Abdominal wall", "Abdomen", ifelse(METASTATIC_SITE_PATIENT == "Adrenal gland", "Adrenal Gland", ifelse(METASTATIC_SITE_PATIENT == "bone(ulna)", "Bone", ifelse(METASTATIC_SITE_PATIENT == "brain", "Brain", ifelse(METASTATIC_SITE_PATIENT == "Chest wall", "Chest Wall", ifelse(METASTATIC_SITE_PATIENT == "Ileum (serosa)", "Ileum", ifelse(METASTATIC_SITE_PATIENT == "lung" | METASTATIC_SITE_PATIENT == "left upper lung lobe" | METASTATIC_SITE_PATIENT == "LLL lung", "Lung", ifelse(METASTATIC_SITE_PATIENT == "lymphnode" | METASTATIC_SITE_PATIENT == "Lymphnode" | METASTATIC_SITE_PATIENT == "left axillary lymph node" | METASTATIC_SITE_PATIENT == "Left Groin Lymph Node" | METASTATIC_SITE_PATIENT == "Periaortic Lymph Nodes", "Lymph Node", ifelse(METASTATIC_SITE_PATIENT == "Peritoneal Implant", "Peritoneum", ifelse(METASTATIC_SITE_PATIENT == "vaginal wall/vagina", "Vagina", ifelse(METASTATIC_SITE_PATIENT == "small intestine", "Small Intestine", ifelse(METASTATIC_SITE_PATIENT == "Small bowel", "Small Bowel", ifelse(METASTATIC_SITE_PATIENT == "skin", "Skin", ifelse(METASTATIC_SITE_PATIENT == "Back, soft tissue" | METASTATIC_SITE_PATIENT == "Right back" | METASTATIC_SITE_PATIENT == "Right upper back" | METASTATIC_SITE_PATIENT == "Skin Upper Back", "Back", ifelse(METASTATIC_SITE_PATIENT == "left adnexa/ pelvic side wall", "Pelvis", METASTATIC_SITE_PATIENT)))))))))))))))), SMOKING_HISTORY = NA, SMOKING_PACK_YEARS = NA, SITE_OF_TUMOR_TISSUE = ifelse(TUMOR_SITE == "Extremities|Extremities", "Extremities", ifelse(TUMOR_SITE == "Trunk|[Not Available]", "Trunk|Unknown", ifelse(TUMOR_SITE=="[Not Available]", "Unknown", ifelse(TUMOR_SITE == "Trunk|Extremities", "Extremities|Trunk", TUMOR_SITE)))), TUMOR_PURITY = NA, Study = "Skin Cutaneous Melanoma (TCGA, PanCancer Atlas)") %>% dplyr::select(-c(HEIGHT, WEIGHT, TUMOR_SITE))
+
+skin_sample <- read_csv("skin_data_clinical_sample.csv")
+skin_sample <- skin_sample %>% dplyr::select(PATIENT_ID, SAMPLE_ID, CANCER_TYPE, TMB_NONSYNONYMOUS) %>% mutate(TMB = TMB_NONSYNONYMOUS, CANCER_TYPE = ifelse(CANCER_TYPE == "[Not Available]", NA, CANCER_TYPE)) %>% dplyr::select(-TMB_NONSYNONYMOUS) %>% group_by(PATIENT_ID) %>% mutate(Code_frequency= n()) %>% filter(!((Code_frequency > 1 & is.na(TMB) == TRUE & is.na(CANCER_TYPE) == TRUE)|(PATIENT_ID == "TCGA-ER-A19T" & is.na(CANCER_TYPE) == TRUE)|(PATIENT_ID == "TCGA-ER-A2NF" & is.na(CANCER_TYPE) == TRUE)))
+
+skin_data <- merge(skin_patient, skin_sample, by = "PATIENT_ID")
+head(skin_data)
+```
+
+## Uterine Corpus Endometrial Carcinoma (TCGA, Firehose Legacy)
+
+```{r}
+uterine_patient <- read_csv("uterine_data_clinical_patient.csv")
+uterine_patient <- uterine_patient %>% dplyr::select(PATIENT_ID, SEX, RACE, ETHNICITY, HEIGHT, WEIGHT, AGE, OS_STATUS, OS_MONTHS, SITE_OF_TUMOR_TISSUE) %>% mutate(BMI = as.numeric(WEIGHT)/(as.numeric(HEIGHT)/100)^2, BMI_CATEGORIES = ifelse(BMI < 18.5, "Underweight", ifelse(BMI < 25, "Normal_Weight", ifelse(BMI < 30, "Overweight", "Obese"))), RACE = ifelse(RACE == "[Not Available]", NA, ifelse(RACE == "ASIAN", "Asian", RACE)), SEX = ifelse(SEX == "[Not Available]", NA, SEX), ETHNICITY = ifelse(ETHNICITY == "[Not Available]", NA, ETHNICITY), OS_STATUS = ifelse(OS_STATUS == "1:DECEASED", 1, 0), METASTATIC_SITE_PATIENT = NA, SMOKING_HISTORY = NA, SMOKING_PACK_YEARS = NA, TUMOR_PURITY = NA, Study = "Uterine Corpus Endometrial Carcinoma (TCGA, Firehose Legacy)") %>% dplyr::select(-c(HEIGHT, WEIGHT))
+
+uterine_sample <- read_csv("uterine_data_clinical_sample.csv")
+uterine_sample <- uterine_sample %>% dplyr::select(PATIENT_ID, SAMPLE_ID, CANCER_TYPE, TMB_NONSYNONYMOUS) %>% mutate(TMB = TMB_NONSYNONYMOUS, CANCER_TYPE = ifelse(CANCER_TYPE == "[Not Available]", NA, CANCER_TYPE)) %>% dplyr::select(-TMB_NONSYNONYMOUS) %>% group_by(PATIENT_ID) %>% mutate(Code_frequency= n()) %>% filter(!(PATIENT_ID == "TCGA-BK-A139" & SAMPLE_ID == "TCGA-BK-A139-02")) # same info but no TMB value for other sample
+
+uterine_data <- merge(uterine_patient, uterine_sample, by = "PATIENT_ID")
+head(uterine_data)
+```
+
+  
+# Summary Statistics of Individual Study Datasets
+
+## Bladder
+Smoking:
+Lifelong Non-smoker (less than 100 cigarettes smoked in Lifetime) = 1
+Current smoker (includes daily smokers and non-daily smokers or occasional smokers) = 2
+Current reformed smoker for > 15 years (greater than 15 years) = 3
+Current reformed smoker for ≤15 years (less than or equal to 15 years) = 4
+```{r}
+Bladder_update <- read_csv("bladder_FGA.csv") %>% dplyr::select(`Patient ID`, `Fraction Genome Altered`) %>% mutate(PATIENT_ID = `Patient ID`, FGA = `Fraction Genome Altered`) %>% dplyr::select(-c(`Patient ID`,`Fraction Genome Altered`))
+
+Bladder_data <- Bladder_data %>% mutate(SEX = factor(SEX), RACE = factor(RACE), ETHNICITY = factor(ETHNICITY), SITE_OF_TUMOR_TISSUE = factor(SITE_OF_TUMOR_TISSUE), METASTATIC_SITE_PATIENT = factor(METASTATIC_SITE_PATIENT), SMOKING_PACK_YEARS = as.numeric(SMOKING_PACK_YEARS), AGE = as.numeric(AGE), OS_STATUS = factor(OS_STATUS), OS_MONTHS = as.numeric(OS_MONTHS), SMOKING_HISTORY = factor(SMOKING_HISTORY), BMI_CATEGORIES = factor(BMI_CATEGORIES), CANCER_TYPE = factor(CANCER_TYPE), Study = factor(Study), TUMOR_PURITY = as.numeric(TUMOR_PURITY))
+
+bladder_data <- merge(Bladder_data, Bladder_update, by = "PATIENT_ID")
+
+```
+
+```{r, echo = FALSE}
+table_bladder <- CreateTableOne(data = bladder_data %>% dplyr::select(-c(SAMPLE_ID, PATIENT_ID, Study)))
+kable(print(table_bladder, showAllLevels = TRUE), caption = "Descriptive Analysis of Bladder Dataset")
+```
+
+## Glioblastoma
+Smoking is same as Bladder
+*no metastatic sites recorded
+```{r}
+Glioblastoma_update <- read_csv("Glioblastoma_FGA.csv")
+
+Glioblastoma_data <- Glioblastoma_data %>% mutate(SEX = factor(SEX), RACE = factor(RACE), ETHNICITY = factor(ETHNICITY), SITE_OF_TUMOR_TISSUE = factor(SITE_OF_TUMOR_TISSUE), METASTATIC_SITE_PATIENT = factor(METASTATIC_SITE_PATIENT), SMOKING_PACK_YEARS = as.numeric(SMOKING_PACK_YEARS), AGE = as.numeric(AGE), OS_STATUS = factor(OS_STATUS), OS_MONTHS = as.numeric(OS_MONTHS), SMOKING_HISTORY = factor(SMOKING_HISTORY), BMI_CATEGORIES = factor(BMI_CATEGORIES), CANCER_TYPE = factor(CANCER_TYPE), Study = factor(Study), TUMOR_PURITY = as.numeric(TUMOR_PURITY))
+
+glioblastoma_data <- merge(Glioblastoma_data, Glioblastoma_update, by = "PATIENT_ID")
+```
+```{r, echo = FALSE}
+table_glioblastoma <- CreateTableOne(data = glioblastoma_data %>% dplyr::select(-c(SAMPLE_ID, PATIENT_ID, Study)))
+kable(print(table_glioblastoma, showAllLevels = TRUE), caption = "Descriptive Analysis of Glioblastoma Dataset")
+```
+
+
+## Esophagogastric 
+(Primary site used for analysis in original article)
+```{r}
+Esophagogastric_update <- read_csv("esophagogastric_update.csv") %>% dplyr::select(`Patient ID`, `Fraction Genome Altered`) %>% mutate(PATIENT_ID = `Patient ID`, FGA = `Fraction Genome Altered`) %>% dplyr::select(-c(`Patient ID`,`Fraction Genome Altered`)) #`Age at Diagnosis`, `BMI Categories`, `Cancer Type`, `Cancer Type Detailed`, `Fraction Genome Altered`, `Metastatic Site`, `TMB (nonsynonymous)`, Sex, `Number of Samples Per Patient`, `Race Category`, `Ethnicity Category`, `Overall Survival (Months)`, `Overall Survival Status`, `Primary Tumor Site`, `Tumor Purity`)
+Esophagogastric_data <- Esophagogastric_data %>% mutate(SEX = factor(SEX), RACE = factor(RACE), ETHNICITY = factor(ETHNICITY), SITE_OF_TUMOR_TISSUE = factor(SITE_OF_TUMOR_TISSUE), METASTATIC_SITE_PATIENT = factor(METASTATIC_SITE_PATIENT), SMOKING_PACK_YEARS = as.numeric(SMOKING_PACK_YEARS), AGE = as.numeric(AGE), OS_STATUS = factor(OS_STATUS), OS_MONTHS = as.numeric(OS_MONTHS), SMOKING_HISTORY = factor(SMOKING_HISTORY), BMI_CATEGORIES = factor(BMI_CATEGORIES), CANCER_TYPE = factor(CANCER_TYPE), Study = factor(Study), TUMOR_PURITY = as.numeric(TUMOR_PURITY))
+
+esophagogastric_data <- merge(Esophagogastric_data, Esophagogastric_update, by = "PATIENT_ID")
+```
+
+```{r, echo = FALSE}
+table_esophago <- CreateTableOne(data = esophagogastric_data %>% dplyr::select(-c(SAMPLE_ID, PATIENT_ID, Study)))
+kable(print(table_esophago, showAllLevels = TRUE), caption = "Descriptive Analysis of Esophagogastric Dataset")
+
+#barplot(summary(Esophagogastric_data %>% mutate(CANCER_TYPE == "Bladder Cancer", "Bladder", ifelse(CANCER_TYPE == "Blood Cancer, NOS", "Blood", ifelse(CANCER_TYPE == "Breast Cancer", "Breast", ifelse(CANCER_TYPE == "Cancer of Unknown Primary", "Unknown", ifelse(CANCER_TYPE == "Colorectal Cancer", "Colorectal", ifelse())))))) %>% select(CANCER_TYPE))
+```
+
+
+## Hepatocellular 
+```{r, echo = FALSE}
+hepatocellular_data <- Hepatocellular_data %>% mutate(SEX = factor(SEX), RACE = factor(RACE), ETHNICITY = factor(ETHNICITY), SITE_OF_TUMOR_TISSUE = factor(SITE_OF_TUMOR_TISSUE), METASTATIC_SITE_PATIENT = factor(METASTATIC_SITE_PATIENT), SMOKING_PACK_YEARS = as.numeric(SMOKING_PACK_YEARS), AGE = as.numeric(AGE), OS_STATUS = factor(OS_STATUS), OS_MONTHS = as.numeric(OS_MONTHS), SMOKING_HISTORY = factor(SMOKING_HISTORY), BMI_CATEGORIES = factor(BMI_CATEGORIES), CANCER_TYPE = factor(CANCER_TYPE), Study = factor(Study), TUMOR_PURITY = as.numeric(TUMOR_PURITY))
+
+table_hepato <- CreateTableOne(data = hepatocellular_data %>% dplyr::select(-c(SAMPLE_ID, PATIENT_ID, Study)))
+kable(print(table_hepato, showAllLevels = TRUE), caption = "Descriptive Analysis of Hepatocellular Dataset")
+```
+
+
+## Cervical
+same as bladder (need to change)
+```{r}
+Cervical_update <- read_csv("Cervical_FGA.csv")
+
+Cervical_data <- cervical_data %>% mutate(SEX = factor(SEX), RACE = factor(RACE), ETHNICITY = factor(ETHNICITY), SITE_OF_TUMOR_TISSUE = factor(SITE_OF_TUMOR_TISSUE), METASTATIC_SITE_PATIENT = factor(METASTATIC_SITE_PATIENT), SMOKING_PACK_YEARS = as.numeric(SMOKING_PACK_YEARS), AGE = as.numeric(AGE), OS_STATUS = factor(OS_STATUS), OS_MONTHS = as.numeric(OS_MONTHS), SMOKING_HISTORY = factor(SMOKING_HISTORY), BMI_CATEGORIES = factor(BMI_CATEGORIES), CANCER_TYPE = factor(CANCER_TYPE), Study = factor(Study), TUMOR_PURITY = as.numeric(TUMOR_PURITY))
+
+Cervical_data <- merge(Cervical_data, Cervical_update, by = "PATIENT_ID")
+```
+```{r, echo = FALSE}
+table_cerv <- CreateTableOne(data = Cervical_data %>% dplyr::select(-c(SAMPLE_ID, PATIENT_ID, Study)))
+kable(print(table_cerv, showAllLevels = TRUE), caption = "Descriptive Analysis of Cervical Dataset")
+```
+
+
+## Cholangiocarcinoma
+same as bladder (need change)
+```{r}
+Cholangiocarcinoma_update <- read_csv("Cholangiocarcinoma_FGA.csv")
+
+Cholangiocarcinoma_data <- Cholangiocarcinoma_data %>% mutate(SEX = factor(SEX), RACE = factor(RACE), ETHNICITY = factor(ETHNICITY), SITE_OF_TUMOR_TISSUE = factor(SITE_OF_TUMOR_TISSUE), METASTATIC_SITE_PATIENT = factor(METASTATIC_SITE_PATIENT), SMOKING_PACK_YEARS = as.numeric(SMOKING_PACK_YEARS), AGE = as.numeric(AGE), OS_STATUS = factor(OS_STATUS), OS_MONTHS = as.numeric(OS_MONTHS), SMOKING_HISTORY = factor(SMOKING_HISTORY), BMI_CATEGORIES = factor(BMI_CATEGORIES), CANCER_TYPE = factor(CANCER_TYPE), Study = factor(Study), TUMOR_PURITY = as.numeric(TUMOR_PURITY))
+
+Cholangiocarcinoma_data <- merge(Cholangiocarcinoma_data, Cholangiocarcinoma_update, by = "PATIENT_ID")
+```
+
+```{r, echo = FALSE}
+table_chol <- CreateTableOne(data = Cholangiocarcinoma_data %>% dplyr::select(-c(SAMPLE_ID, PATIENT_ID, Study)))
+kable(print(table_chol, showAllLevels = TRUE), caption = "Descriptive Analysis of Cholangiocarcinoma Dataset")
+```
+
+
+## Kidney
+same as bladder (need change)
+```{r}
+Kidney_update <- read_csv("Kidney_FGA.csv") 
+
+kidney_data <- kidney_data %>% mutate(SEX = factor(SEX), RACE = factor(RACE), ETHNICITY = factor(ETHNICITY), SITE_OF_TUMOR_TISSUE = factor(SITE_OF_TUMOR_TISSUE), METASTATIC_SITE_PATIENT = factor(METASTATIC_SITE_PATIENT), SMOKING_PACK_YEARS = as.numeric(SMOKING_PACK_YEARS), AGE = as.numeric(AGE), OS_STATUS = factor(OS_STATUS), OS_MONTHS = as.numeric(OS_MONTHS), SMOKING_HISTORY = factor(SMOKING_HISTORY), BMI_CATEGORIES = factor(BMI_CATEGORIES), CANCER_TYPE = factor(CANCER_TYPE), Study = factor(Study), TUMOR_PURITY = as.numeric(TUMOR_PURITY))
+
+Kidney_data <- merge(kidney_data, Kidney_update, by = "PATIENT_ID")
+```
+
+```{r, echo = FALSE}
+table_kid <- CreateTableOne(data = kidney_data %>% dplyr::select(-c(SAMPLE_ID, PATIENT_ID, Study)))
+kable(print(table_kid, showAllLevels = TRUE), caption = "Descriptive Analysis of Kidney Dataset")
+```
+
+
+## Skin 
+No smoking
+```{r}
+skin_update <- read_csv("skin_FGA.csv") 
+
+skin_data <- skin_data %>% mutate(SEX = factor(SEX), RACE = factor(RACE), ETHNICITY = factor(ETHNICITY), SITE_OF_TUMOR_TISSUE = factor(SITE_OF_TUMOR_TISSUE), METASTATIC_SITE_PATIENT = factor(METASTATIC_SITE_PATIENT), SMOKING_PACK_YEARS = as.numeric(SMOKING_PACK_YEARS), AGE = as.numeric(AGE), OS_STATUS = factor(OS_STATUS), OS_MONTHS = as.numeric(OS_MONTHS), SMOKING_HISTORY = factor(SMOKING_HISTORY), BMI_CATEGORIES = factor(BMI_CATEGORIES), CANCER_TYPE = factor(CANCER_TYPE), Study = factor(Study), TUMOR_PURITY = as.numeric(TUMOR_PURITY))
+
+Skin_data <- merge(skin_data, skin_update, by = "PATIENT_ID")
+```
+
+```{r, echo = FALSE}
+table_skin <- CreateTableOne(data = Skin_data %>% dplyr::select(-c(SAMPLE_ID, PATIENT_ID, Study)))
+kable(print(table_skin, showAllLevels = TRUE), caption = "Descriptive Analysis of Skin Dataset")
+```
+
+
+
+## Uterine
+no smoking
+```{r}
+uterine_update <- read_csv("uterine_FGA.csv") 
+
+uterine_data <- uterine_data %>% mutate(SEX = factor(SEX), RACE = factor(RACE), ETHNICITY = factor(ETHNICITY), SITE_OF_TUMOR_TISSUE = factor(SITE_OF_TUMOR_TISSUE), METASTATIC_SITE_PATIENT = factor(METASTATIC_SITE_PATIENT), SMOKING_PACK_YEARS = as.numeric(SMOKING_PACK_YEARS), AGE = as.numeric(AGE), OS_STATUS = factor(OS_STATUS), OS_MONTHS = as.numeric(OS_MONTHS), SMOKING_HISTORY = factor(SMOKING_HISTORY), BMI_CATEGORIES = factor(BMI_CATEGORIES), CANCER_TYPE = factor(CANCER_TYPE), Study = factor(Study), TUMOR_PURITY = as.numeric(TUMOR_PURITY))
+
+Uterine_data <- merge(uterine_data, uterine_update, by = "PATIENT_ID")
+```
+
+```{r, echo = FALSE}
+table_uter <- CreateTableOne(data = Uterine_data %>% dplyr::select(-c(SAMPLE_ID, PATIENT_ID, Study)))
+kable(print(table_uter, showAllLevels = TRUE), caption = "Descriptive Analysis of Uterine Dataset")
+```
+
+## Colorectal 
+```{r}
+colorectal_update <- read_csv("color_FGA.csv") 
+
+Colorectal_data <- Colorectal_data %>% mutate(SEX = factor(SEX), RACE = factor(RACE), ETHNICITY = factor(ETHNICITY), SITE_OF_TUMOR_TISSUE = factor(SITE_OF_TUMOR_TISSUE), METASTATIC_SITE_PATIENT = factor(METASTATIC_SITE_PATIENT), SMOKING_PACK_YEARS = as.numeric(SMOKING_PACK_YEARS), AGE = as.numeric(AGE), OS_STATUS = factor(OS_STATUS), OS_MONTHS = as.numeric(OS_MONTHS), SMOKING_HISTORY = factor(SMOKING_HISTORY), BMI_CATEGORIES = factor(BMI_CATEGORIES), CANCER_TYPE = factor(CANCER_TYPE), Study = factor(Study), TUMOR_PURITY = as.numeric(TUMOR_PURITY))
+
+colorectal_data <- merge(Colorectal_data, colorectal_update, by = "PATIENT_ID")
+```
+
+```{r, echo = FALSE}
+table_color <- CreateTableOne(data = colorectal_data %>% dplyr::select(-c(SAMPLE_ID, PATIENT_ID, Study)))
+kable(print(table_color, showAllLevels = TRUE), caption = "Descriptive Analysis of Colorectal Dataset")
+```
+
+
+
+# Merge Datasets (includes BMI and some sex/race/smoking)
+
+Issues with smoking: uterine/skin/hepatocellular/esophagogastric no have have, kidney/cervical/bladder has smoking history indicator/smoking history pack years/year started/year stopped, cholangiocarcinoma, Colorectal has smoker status/smoking history indicators, glioblastoma has smoking history/secondhand smoke exposure)
+(still working on)
+
+```{r}
+BMI_dataset <- rbind(bladder_data, esophagogastric_data, glioblastoma_data, colorectal_data, hepatocellular_data, Cervical_data, Cholangiocarcinoma_data, Kidney_data, Skin_data, Uterine_data) %>% mutate(SEX = factor(SEX), RACE = factor(RACE), ETHNICITY = factor(ETHNICITY), SITE_OF_TUMOR_TISSUE = factor(SITE_OF_TUMOR_TISSUE), METASTATIC_SITE_PATIENT = factor(METASTATIC_SITE_PATIENT), SMOKING_PACK_YEARS = as.numeric(SMOKING_PACK_YEARS), AGE = as.numeric(AGE), OS_STATUS = factor(OS_STATUS), OS_MONTHS = as.numeric(OS_MONTHS), SMOKING_HISTORY = factor(SMOKING_HISTORY), BMI_CATEGORIES = factor(BMI_CATEGORIES), CANCER_TYPE = factor(CANCER_TYPE), Study = factor(Study), TUMOR_PURITY = as.numeric(TUMOR_PURITY))
+
+# BMI_dataset %>% group_by(PATIENT_ID) %>% mutate(Code_frequency2= n()) %>% filter(Code_frequency2 > 1)
+# if same patient but different form of cancer years later how should that be handled 
+
+# Current Size: 5989
+```
+
+
+In combinations:
+Abdomen - abdominal wall, stomach, large intestine(colon), small intestine (jejunum and ileum), liver, spleen, gallbladder, pancreas, uterus, fallopian tubes, ovaries, kidneys, ureters, bladder, blood vessels, bile duct
+paragolic gutter - space between colon and abdominal wall
+
+*omentum is in abdomen (fatty tissue in stomach and drapes over intestines), peritoneum membrane that lines abdominal cavirty
+messentery connects intestines to stomach (membrane comprises the double fold of the peritoneum)
+falciform ligament connects liver abdomen, gastrocolic ligament (could put together as ligaments), 
+- peritoneum contains omentum, ligaments, and mesentery
+
+pleura line chest and cover lungs (fluid between lungs and wall of chest cavity is pleural fluid), mediastinum is space in chest that contains heart
+
+Bowel - intestines (small intestines - duodenum, ileum, jejunum -, cecum, colon, rectum, anal cavity) in general
+
+adnexa or endomterium refering to overies, fallopian tubes, uterus
+
+epidural and sacral mass to spine
+
+manubrium - bone (top portion), rib, skull base (?), sacrum (sacral mass)
+
+```{r}
+# combining categories
+BMI_og <- BMI_dataset
+
+BMI_dataset <- BMI_dataset %>% mutate(CANCER_TYPE = ifelse(is.na(CANCER_TYPE), "Unknown", as.character(CANCER_TYPE)), SMOKING_HISTORY = ifelse(is.na(SMOKING_HISTORY), "Unknown", as.character(SMOKING_HISTORY)), BMI_CATEGORIES = ifelse(is.na(BMI_CATEGORIES), "Unknown", as.character(BMI_CATEGORIES)), SEX = ifelse(is.na(SEX), "Unknown", as.character(SEX)), RACE = ifelse(is.na(RACE), "Unknown", as.character(RACE)), ETHNICITY = ifelse(is.na(ETHNICITY), "Unknown", as.character(ETHNICITY)), SITE_OF_TUMOR_TISSUE = ifelse(SITE_OF_TUMOR_TISSUE == "Left" | SITE_OF_TUMOR_TISSUE == "Right", "Colon", ifelse(SITE_OF_TUMOR_TISSUE == "intrahepatic cholangiocarcinoma", "Bile Duct", ifelse(SITE_OF_TUMOR_TISSUE == "Other  Specify", "Unknown", ifelse(CANCER_TYPE == "Melanoma", "Skin", as.character(SITE_OF_TUMOR_TISSUE))))), METASTATIC_SITE_PATIENT = ifelse(METASTATIC_SITE_PATIENT == "Adrenal Gland" | METASTATIC_SITE_PATIENT == "Colon" | METASTATIC_SITE_PATIENT == "Falciform Ligament" | METASTATIC_SITE_PATIENT == "Gallbladder" | METASTATIC_SITE_PATIENT == "Gastric" | METASTATIC_SITE_PATIENT == "Mesentery" | METASTATIC_SITE_PATIENT == "Gastrocolic Ligament" | METASTATIC_SITE_PATIENT == "Kidney" | METASTATIC_SITE_PATIENT == "Liver" | METASTATIC_SITE_PATIENT == "Omentum" | METASTATIC_SITE_PATIENT == "Pancreas" | METASTATIC_SITE_PATIENT == "Paracolic Gutter" | METASTATIC_SITE_PATIENT == "Peritoneal tumor" | METASTATIC_SITE_PATIENT == "Peritoneum" | METASTATIC_SITE_PATIENT == "Retroperitoneum" | METASTATIC_SITE_PATIENT == "Spleen" | METASTATIC_SITE_PATIENT == "Stomach" | METASTATIC_SITE_PATIENT == "Ureter" | METASTATIC_SITE_PATIENT == "Bowel" | METASTATIC_SITE_PATIENT == "Small Bowel" | METASTATIC_SITE_PATIENT == "Rectum" | METASTATIC_SITE_PATIENT == "Anus" | METASTATIC_SITE_PATIENT == "Duodenum" | METASTATIC_SITE_PATIENT == "Ileum" | METASTATIC_SITE_PATIENT == "Jejunum" | METASTATIC_SITE_PATIENT == "Small Intestine", "Abdomen", ifelse(METASTATIC_SITE_PATIENT == "Epidural" | METASTATIC_SITE_PATIENT == "spinal cord" | METASTATIC_SITE_PATIENT == "Paraspinal Mass", "Spine", ifelse(METASTATIC_SITE_PATIENT == "manubrium" | METASTATIC_SITE_PATIENT == "Femur" | METASTATIC_SITE_PATIENT == "Skull base" | METASTATIC_SITE_PATIENT == "Sacrum,Soft Tissue" | METASTATIC_SITE_PATIENT == "Sacral Mass" | METASTATIC_SITE_PATIENT == "Pelvis" | METASTATIC_SITE_PATIENT == "posterior skull" | METASTATIC_SITE_PATIENT == "Rib", "Bone", ifelse(METASTATIC_SITE_PATIENT == "Lung" | METASTATIC_SITE_PATIENT == "Pleura" | METASTATIC_SITE_PATIENT == "Pleural Fluid" | METASTATIC_SITE_PATIENT == "Chest Wall" | METASTATIC_SITE_PATIENT == "Mediastinum" | METASTATIC_SITE_PATIENT == "Pericardium", "Chest", ifelse(METASTATIC_SITE_PATIENT == "Left arm, soft tissue" | METASTATIC_SITE_PATIENT == "Left posterior shoulder" | METASTATIC_SITE_PATIENT == "Right wrist" | METASTATIC_SITE_PATIENT == "Soft tissue of right upper arm" | METASTATIC_SITE_PATIENT == "Soft tissue, right axilla", "Arm", ifelse(METASTATIC_SITE_PATIENT == "Other" | METASTATIC_SITE_PATIENT == "Not Applicable", "Unknown", ifelse(METASTATIC_SITE_PATIENT == "Vagina" | METASTATIC_SITE_PATIENT == "uterus" | METASTATIC_SITE_PATIENT == "Ovary" | METASTATIC_SITE_PATIENT == "Vulva" | METASTATIC_SITE_PATIENT == "Adnexa or Endomterium", "Female Reproductive", ifelse(METASTATIC_SITE_PATIENT == "Back" | METASTATIC_SITE_PATIENT == "Left buttock mass" | METASTATIC_SITE_PATIENT == "Left Flank" | METASTATIC_SITE_PATIENT == "Right Flank", "Trunk", ifelse(METASTATIC_SITE_PATIENT == "Left thigh" | METASTATIC_SITE_PATIENT == "Right Thigh (Subcutaneous Tissue)", "Thigh", ifelse(METASTATIC_SITE_PATIENT == "Lymph Node", "lymph", ifelse("Right neck", "Neck", as.character(METASTATIC_SITE_PATIENT)))))))))))))
+
+# missing tumor sites to category
+BMI_dataset <- BMI_dataset %>% mutate(CANCER_TYPE = ifelse(CANCER_TYPE == "Liver", "Hepatobiliary Cancer", as.character(CANCER_TYPE)), RACE = ifelse(RACE == "BLACK OR AFRICAN AMERICAN", "BLACK", ifelse(RACE == "NATIVE HAWAIIAN OR OTHER PACIFIC ISLANDER" | RACE == "AMERICAN INDIAN OR ALASKA NATIVE", "Other", as.character(RACE))), METASTATIC = ifelse(is.na(METASTATIC_SITE_PATIENT), "Unknown", as.character(METASTATIC_SITE_PATIENT)), SITE_OF_TUMOR_TISSUE = ifelse(is.na(SITE_OF_TUMOR_TISSUE), "Unknown", as.character(SITE_OF_TUMOR_TISSUE))) %>% dplyr::select(!METASTATIC_SITE_PATIENT)
+
+head(BMI_dataset)
+```
+
+# Summarize/Analyze Full Dataset
+
+```{r}
+pvalue <- function(x, ...) {
+    # Construct vectors of data y, and groups (strata) g
+    y <- unlist(x)
+    g <- factor(rep(1:length(x), times=sapply(x, length)))
+    if (is.numeric(y)) {
+      # variance and normality check within group
+      vector <- c()
+      if (bartlett.test(y ~ g)$p.value >= .05 & any((for (group_name in unique(g)[!is.na(unique(g))]){vector <- append(vector, ad.test(subset(y, g == group_name))$p.value)}) >= .05)){
+        # For numeric variables, perform anova
+        if(length(unique(g)) == 2){
+          p <- t.test(y ~ g)$p.value
+        }
+        else{
+        p <- summary(aov(y ~ g))[[1]][["Pr(>F)"]][[1]]
+        }
+    } else {
+      p <- kruskal.test(y, g)$p.value
+    }
+    }
+    else{
+      if (all(table(y, g) > 5)) {
+        # For categorical variables, perform a chi-squared test of independence
+        p <- chisq.test(table(y, g))$p.value
+      }
+      else {
+        p <- fisher.test(table(y,g), simulate.p.value = TRUE)$p.value
+      }
+    }
+    # Format the p-value, using an HTML entity for the less-than sign.
+    # The initial empty string places the output on the line below the variable label.
+    c("", sub("<", "&lt;", format.pval(p, digits=3, eps=0.001)))
+}
+#(for (group_name in unique(smoking_data_FGA$SEX)){append(vector, prop.test(subset(smoking_data_FGA, SEX == group_name)$FGA)$p.value)
+# fisher.test(table(is.na(smoking_data_FGA$AGE), smoking_data_FGA$SEX))
+
+# could do kruskal wallis for non-parametric but what about categorical data
+```
+
+
+```{r}
+BMI_dataset <- BMI_dataset %>% mutate(SEX = ifelse(SEX == "Unknown", NA, as.character(SEX)), RACE = ifelse(RACE == "Unknown", NA, as.character(RACE)), ETHNICITY = ifelse(ETHNICITY == "Unknown", NA, as.character(ETHNICITY)), SMOKING_HISTORY = ifelse(SMOKING_HISTORY == "Unknown", NA, as.character(SMOKING_HISTORY)), SITE_OF_TUMOR_TISSUE = ifelse(SITE_OF_TUMOR_TISSUE == "Unknown", NA, as.character(SITE_OF_TUMOR_TISSUE)), METASTATIC = ifelse(METASTATIC == "Unknown", NA, as.character(METASTATIC)), BMI_CATEGORIES = ifelse(BMI_CATEGORIES== "Unknown", NA, as.character(BMI_CATEGORIES)), CANCER_TYPE = ifelse(CANCER_TYPE == "Unknown", NA, as.character(CANCER_TYPE)), Code_frequency = factor(Code_frequency))
+```
+
+## General Summary Statistics
+```{r table_bmi, echo = FALSE}
+table1(~SMOKING_PACK_YEARS + AGE + OS_MONTHS + BMI + TMB + TUMOR_PURITY + FGA + SEX + RACE + ETHNICITY + SITE_OF_TUMOR_TISSUE + METASTATIC_SITE_PATIENT + OS_STATUS + SMOKING_HISTORY + BMI_CATEGORIES + CANCER_TYPE + Code_frequency + Study, data = BMI_og)
+
+table1(~Study + Code_frequency + TMB + FGA + BMI_CATEGORIES + BMI + RACE + ETHNICITY + SEX + SMOKING_HISTORY + SMOKING_PACK_YEARS + CANCER_TYPE + SITE_OF_TUMOR_TISSUE + METASTATIC + TUMOR_PURITY +  AGE + OS_MONTHS + OS_STATUS, data = BMI_dataset)
+```
+
+## FGA by Category
+```{r}
+#kable(BMI_dataset %>% mutate(FGA = ifelse(is.na(FGA), .2, FGA)) %>% group_by(BMI_CATEGORIES) %>% summarize(mean(FGA)))
+
+#kable(BMI_dataset %>% mutate(FGA = ifelse(is.na(FGA), .2, FGA)) %>% group_by(RACE, ETHNICITY) %>% summarize(mean(FGA)))
+
+#kable(BMI_dataset %>% mutate(FGA = ifelse(is.na(FGA), .2, FGA)) %>% group_by(SMOKING_HISTORY) %>% summarize(mean(FGA)))
+
+#kable(BMI_dataset %>% mutate(FGA = ifelse(is.na(FGA), .2, FGA)) %>% group_by(SEX) %>% summarize(mean(FGA)))
+```
+
+## TMB by Category
+```{r}
+#kable(BMI_dataset %>% mutate(TMB = ifelse(is.na(TMB), 8.83, TMB)) %>% group_by(BMI_CATEGORIES) %>% summarize(mean(TMB)))
+
+#kable(BMI_dataset %>% mutate(TMB = ifelse(is.na(TMB), 8.83, TMB)) %>% group_by(RACE, ETHNICITY) %>% summarize(mean(TMB)))
+
+#kable(BMI_dataset %>% mutate(TMB = ifelse(is.na(TMB), 8.83, TMB)) %>% group_by(SMOKING_HISTORY) %>% summarize(mean(TMB)))
+
+#kable(BMI_dataset %>% mutate(TMB = ifelse(is.na(TMB), 8.83, TMB)) %>% group_by(SEX) %>% summarize(mean(TMB)))
+```
+
+
+## Variables by Race
+```{r}
+#table1(~ETHNICITY + AGE + OS_MONTHS + BMI + TMB + TUMOR_PURITY + FGA + SEX + OS_STATUS + SMOKING_HISTORY + BMI_CATEGORIES + CANCER_TYPE + Code_frequency + Study | RACE, data = BMI_dataset %>% filter(!is.na(RACE)), extra.col=list(`P-value`=pvalue))
+
+table_race <- fsmry.dmgrph(dat = BMI_dataset %>% filter(!is.na(RACE)), vars = c("Code_frequency", "TMB", "FGA", "ETHNICITY", "SEX", "SMOKING_HISTORY", "BMI_CATEGORIES", "BMI", "CANCER_TYPE", "TUMOR_PURITY", "AGE", "OS_MONTHS", "OS_STATUS", "Study"), vars.cat = c(1,0,0,1,1,1,1,0,1,0,0,0,1,1), by = "RACE", prop.by.row = F)
+
+#knitr::kable(table_race[[1]], row.names = F)
+kbl(table_race[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>Variables By Race", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+```
+
+## Variables by Sex
+
+```{r}
+#table1(~Code_frequency + TMB + FGA + SMOKING_HISTORY + RACE + ETHNICITY + BMI_CATEGORIES + BMI + CANCER_TYPE + SITE_OF_TUMOR_TISSUE + METASTATIC + OS_STATUS + OS_MONTHS + AGE + TUMOR_PURITY + Study | SEX, data = BMI_dataset %>% filter(!is.na(SEX)), extra.col=list(`P-value`=pvalue))
+
+table_sex <- fsmry.dmgrph(dat = BMI_dataset %>% filter(!is.na(SEX)), vars = c("Code_frequency", "TMB", "FGA", "RACE", "ETHNICITY", "SMOKING_HISTORY", "BMI_CATEGORIES", "BMI", "CANCER_TYPE", "TUMOR_PURITY", "AGE", "OS_MONTHS", "OS_STATUS", "Study"), vars.cat = c(1,0,0,1,1,1,1,0,1,0,0,0,1,1), by = "SEX", prop.by.row = F)
+
+kbl(table_sex[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>Variables By Sex", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+```
+
+
+## Variables by BMI Category
+```{r}
+#table1(~SMOKING_PACK_YEARS + AGE + OS_MONTHS + BMI + RACE + ETHNICITY + TMB + TUMOR_PURITY + FGA + SEX + SITE_OF_TUMOR_TISSUE + METASTATIC + OS_STATUS + SMOKING_HISTORY + CANCER_TYPE + Code_frequency + Study | BMI_CATEGORIES, data = BMI_dataset %>% filter(!is.na(BMI_CATEGORIES)), extra.col=list(`P-value`=pvalue))
+
+table_bmi <- fsmry.dmgrph(dat = BMI_dataset %>% filter(!is.na(BMI_CATEGORIES)), vars = c("Code_frequency", "BMI", "TMB", "FGA", "RACE", "ETHNICITY", "SMOKING_HISTORY", "SEX", "CANCER_TYPE", "TUMOR_PURITY", "AGE", "OS_MONTHS", "OS_STATUS", "Study"), vars.cat = c(1,0,0,0,1,1,1,1,1,0,0,0,1,1), by = "BMI_CATEGORIES", prop.by.row = F)
+
+kbl(table_bmi[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>Variables By BMI", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+```
+
+## Variables by Smoking History
+```{r}
+#table1(~SMOKING_PACK_YEARS + AGE + OS_MONTHS + BMI + BMI_CATEGORIES + RACE + ETHNICITY + TMB + TUMOR_PURITY + FGA + SEX + SITE_OF_TUMOR_TISSUE + METASTATIC + OS_STATUS + CANCER_TYPE + Code_frequency + Study | SMOKING_HISTORY, data = BMI_dataset %>% filter(!is.na(SMOKING_HISTORY)), extra.col=list(`P-value`=pvalue))
+
+table_smoking <- fsmry.dmgrph(dat = BMI_dataset %>% filter(!is.na(SMOKING_HISTORY)), vars = c("Code_frequency", "TMB", "FGA", "RACE", "ETHNICITY", "SEX", "BMI_CATEGORIES", "BMI", "CANCER_TYPE", "TUMOR_PURITY", "AGE", "OS_MONTHS", "OS_STATUS", "Study"), vars.cat = c(1,0,0,1,1,1,1,0,1,0,0,0,1,1), by = "SMOKING_HISTORY", prop.by.row = F)
+
+kbl(table_smoking[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>Variables By Smoking History", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+```
+
+## Variables by Primary Tumor Site
+```{r}
+#table1(~SMOKING_PACK_YEARS + SMOKING_HISTORY + AGE + OS_MONTHS + BMI + BMI_CATEGORIES + RACE + ETHNICITY + TMB + TUMOR_PURITY + FGA + SEX + METASTATIC + OS_STATUS + CANCER_TYPE + Code_frequency + Study | SITE_OF_TUMOR_TISSUE, data = BMI_dataset, extra.col=list(`P-value`=pvalue))
+```
+
+## Variables by Metastatic Tumor Site
+```{r}
+#table1(~SMOKING_PACK_YEARS + SMOKING_HISTORY + AGE + OS_MONTHS + BMI + BMI_CATEGORIES + RACE + ETHNICITY + TMB + TUMOR_PURITY + FGA + SEX + SITE_OF_TUMOR_TISSUE + OS_STATUS + CANCER_TYPE + Code_frequency + Study | METASTATIC, data = BMI_dataset, extra.col=list(`P-value`=pvalue))
+```
+
+## Variables by Cancer Type
+```{r}
+#table1(~SMOKING_PACK_YEARS + SMOKING_HISTORY + AGE + OS_MONTHS + BMI + BMI_CATEGORIES + RACE + ETHNICITY + TMB + TUMOR_PURITY + FGA + SEX + SITE_OF_TUMOR_TISSUE + METASTATIC + OS_STATUS + Code_frequency + Study | CANCER_TYPE, data = BMI_dataset, extra.col=list(`P-value`=pvalue))
+```
+
+## Variables by Study
+```{r}
+#table1(~SMOKING_PACK_YEARS + SMOKING_HISTORY + AGE + OS_MONTHS + BMI + BMI_CATEGORIES + RACE + ETHNICITY + TMB + TUMOR_PURITY + FGA + SEX + SITE_OF_TUMOR_TISSUE + METASTATIC_SITE_PATIENT + OS_STATUS + CANCER_TYPE + Code_frequency | Study, data = BMI_og, extra.col=list(`P-value`=pvalue))
+
+#table1(~SMOKING_PACK_YEARS + SMOKING_HISTORY + AGE + OS_MONTHS + BMI + BMI_CATEGORIES + RACE + ETHNICITY + TMB + TUMOR_PURITY + FGA + SEX + SITE_OF_TUMOR_TISSUE + METASTATIC + OS_STATUS + CANCER_TYPE + Code_frequency | Study, data = BMI_dataset, extra.col=list(`P-value`=pvalue))
+#table_study <- fsmry.dmgrph(dat = BMI_dataset %>% filter(!is.na(Study)), vars = c("TMB", "FGA"), vars.cat = c(0,0), by = "Study", prop.by.row = F)
+
+#kbl(table_study[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>Variables By Study", align = "l") %>%
+# kable_classic(full_width = F, position = "center", html_font = "Cambria")
+```
+
+## Survival Analysis
+
+### General
+```{r}
+surv_data <- BMI_dataset %>% mutate(OS_STATUS = as.numeric(OS_STATUS))
+Cancers_km <- survfit(Surv(OS_MONTHS, OS_STATUS) ~ 1, data = surv_data)
+
+                       
+ggsurvplot(Cancers_km, data = surv_data, pval = TRUE, pval.method = TRUE, conf.int = TRUE, title = "Cancer Meta-Analysis Kaplan Meier Curve", legend = "bottom", xlab = "Time (months)")
+```
+
+### BMI Category
+```{r}
+BMI_km <- survfit(Surv(OS_MONTHS, OS_STATUS) ~ BMI_CATEGORIES, data = surv_data)
+
+ggsurvplot(BMI_km, data = surv_data, pval = TRUE, pval.method = TRUE, pval.method.coord = c(250, .9), pval.coord = c(250, .8), conf.int = TRUE, title = "Cancer Meta-Analysis Kaplan Meier Curve by BMI Category", legend = "bottom", xlab = "Time (months)") %++% guides(colour = guide_legend(nrow=3))
+```
+
+### Sex
+```{r}
+SEX_km <- survfit(Surv(OS_MONTHS, OS_STATUS) ~ SEX, data = surv_data)
+
+ggsurvplot(SEX_km, data = surv_data, pval = TRUE, pval.method = TRUE, pval.method.coord = c(250, .9), pval.coord = c(250, .8), conf.int = TRUE, title = "Cancer Meta-Analysis Kaplan Meier Curve by Sex", legend = "bottom", xlab = "Time (months)")
+```
+
+### Smoking History
+```{r}
+smoke_km <- survfit(Surv(OS_MONTHS, OS_STATUS) ~ SMOKING_HISTORY, data = surv_data)
+
+ggsurvplot(smoke_km, data = surv_data, pval = TRUE, pval.method = TRUE, pval.method.coord = c(250, .9), pval.coord = c(250, .8), conf.int = TRUE, title = "Cancer Meta-Analysis Kaplan Meier Curve by Smoking Status", legend = "bottom", xlab = "Time (months)") %++% guides(colour = guide_legend(nrow=2))
+```
+
+### Race
+```{r}
+race_km <- survfit(Surv(OS_MONTHS, OS_STATUS) ~ RACE, data = surv_data)
+
+ggsurvplot(race_km, data = surv_data, pval = TRUE, pval.method = TRUE, pval.method.coord = c(250, .9), pval.coord = c(250, .8), conf.int = TRUE, title = "Cancer Meta-Analysis Kaplan Meier Curve by Race", legend = "bottom", xlab = "Time (months)") %++% guides(colour = guide_legend(nrow=3))
+```
+
+### Ethnicity
+```{r}
+ethnicity_km <- survfit(Surv(OS_MONTHS, OS_STATUS) ~ ETHNICITY, data = surv_data)
+
+ggsurvplot(ethnicity_km, data = surv_data, pval = TRUE, pval.method = TRUE, pval.method.coord = c(250, .9), pval.coord = c(250, .8), conf.int = TRUE, title = "Cancer Meta-Analysis Kaplan Meier Curve by Ethnicity", legend = "bottom", xlab = "Time (months)") %++% guides(colour = guide_legend(nrow=2))
+```
+
+### Primary Tumor Site
+```{r}
+prim_km <- survfit(Surv(OS_MONTHS, OS_STATUS) ~ SITE_OF_TUMOR_TISSUE, data = surv_data)
+
+ggsurvplot(prim_km, data = surv_data, pval = TRUE, pval.method = TRUE, pval.method.coord = c(250, .9), pval.coord = c(250, .8), conf.int = TRUE, legend = "none", title = "Cancer Meta-Analysis Kaplan Meier Curve by Primary Site", xlab = "Time (months)") 
+```
+
+### Metastatic Tumor Site
+```{r}
+meta_km <- survfit(Surv(OS_MONTHS, OS_STATUS) ~ METASTATIC, data = surv_data)
+
+ggsurvplot(meta_km, data = surv_data, pval = TRUE, pval.method = TRUE, pval.method.coord = c(250, .9), pval.coord = c(250, .8), conf.int = TRUE, legend = "bottom", title = "Cancer Meta-Analysis Kaplan Meier Curve by Metastatic Site", xlab = "Time (months)") %++% guides(colour = guide_legend(nrow=5))
+```
+
+### Cancer Type
+```{r}
+type_km <- survfit(Surv(OS_MONTHS, OS_STATUS) ~ CANCER_TYPE, data = surv_data)
+
+ggsurvplot(type_km, data = surv_data, pval = TRUE, pval.method = TRUE, pval.method.coord = c(250, .9), pval.coord = c(250, .8), conf.int = TRUE, legend = "right", title = "Cancer Meta-Analysis Kaplan Meier Curve by Cancer Type", xlab = "Time (months)")# %++% guides(colour = guide_legend(nrow=5))
+```
+
+### Study
+```{r}
+study_km <- survfit(Surv(OS_MONTHS, OS_STATUS) ~ Study, data = surv_data)
+
+ggsurvplot(study_km, data = surv_data, pval = TRUE, pval.method = TRUE, pval.method.coord = c(250, .9), pval.coord = c(250, .8), conf.int = TRUE, legend = "none", title = "Cancer Meta-Analysis Kaplan Meier Curve by Study", xlab = "Time (months)")
+```
+
+```{r}
+surv_FGA <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ FGA + BMI_CATEGORIES, data = BMI_dataset %>% filter(!is.na(FGA)))
+summary(surv_FGA) # significant
+
+survFGA_fit <- survfit(surv_FGA)
+
+plot(survFGA_fit, main = "Survival Curve", xlab = "Time", ylab = "Survival Probability")
+
+surv_TMB <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ TMB + BMI_CATEGORIES, data = BMI_dataset %>% filter(!is.na(TMB) & is.finite(TMB))) # SIGNIFICANT
+summary(surv_TMB)
+survTMB_fit <- survfit(surv_TMB)
+plot(survTMB_fit, main = "Survival Curve", xlab = "Time", ylab = "Survival Probability")
+```
+
+
+
+## Plots
+```{r}
+BMI_dataset %>% 
+  filter(!is.na(FGA)) %>% 
+  group_by(RACE) %>% 
+  summarise(FGA = mean(FGA)) %>%
+ggplot(aes(x = RACE, y = FGA, fill = RACE)) +
+  geom_col() +
+  labs(title = "FGA by Race", xlab = "Race") +
+  theme(plot.title = element_text(hjust = .5))
+
+BMI_dataset %>% 
+  filter(!is.na(TMB)) %>% 
+  group_by(RACE) %>% 
+  summarise(TMB = mean(TMB)) %>%
+ggplot(aes(x = RACE, y = TMB, fill = RACE)) +
+  geom_col() +
+  labs(title = "TMB by Race", xlab = "Race") +
+  theme(plot.title = element_text(hjust = .5))
+
+
+BMI_dataset %>% 
+  filter(!is.na(FGA)) %>% 
+  group_by(SEX) %>% 
+  summarise(FGA = mean(FGA)) %>%
+ggplot(aes(x = SEX, y = FGA, fill = SEX)) +
+  geom_col() +
+  labs(title = "FGA by Sex", xlab = "Sex") +
+  theme(plot.title = element_text(hjust = .5))
+
+BMI_dataset %>% 
+  filter(!is.na(TMB)) %>% 
+  group_by(SEX) %>% 
+  summarise(TMB = mean(TMB)) %>%
+ggplot(aes(x = SEX, y = TMB, fill = SEX)) +
+  geom_col() +
+  labs(title = "TMB by Sex", xlab = "Sex") +
+  theme(plot.title = element_text(hjust = .5))
+
+
+BMI_dataset %>% 
+  filter(!is.na(FGA)) %>% 
+  group_by(SMOKING_HISTORY) %>% 
+  summarise(FGA = mean(FGA)) %>%
+ggplot(aes(x = SMOKING_HISTORY, y = FGA, fill = SMOKING_HISTORY)) +
+  geom_col() +
+  labs(title = "FGA by Smoking History", xlab = "Smoking History") +
+  theme(plot.title = element_text(hjust = .5))
+
+BMI_dataset %>% 
+  filter(!is.na(TMB)) %>% 
+  group_by(SMOKING_HISTORY) %>% 
+  summarise(TMB = mean(TMB)) %>%
+ggplot(aes(x = SMOKING_HISTORY, y = TMB, fill = SMOKING_HISTORY)) +
+  geom_col() +
+  labs(title = "TMB by Smoking History", xlab = "Smoking History") +
+  theme(plot.title = element_text(hjust = .5))
+
+
+BMI_dataset %>% 
+  filter(!is.na(FGA)) %>% 
+  group_by(BMI_CATEGORIES) %>% 
+  summarise(FGA = mean(FGA)) %>%
+ggplot(aes(x = BMI_CATEGORIES, y = FGA, fill = BMI_CATEGORIES)) +
+  geom_col() +
+  labs(title = "FGA by BMI Category", xlab = "BMI Category") +
+  theme(plot.title = element_text(hjust = .5))
+
+BMI_dataset %>% 
+  filter(!is.na(TMB)) %>% 
+  group_by(BMI_CATEGORIES) %>% 
+  summarise(TMB = mean(TMB)) %>%
+ggplot(aes(x = BMI_CATEGORIES, y = TMB, fill = BMI_CATEGORIES)) +
+  geom_col() +
+  labs(title = "TMB by BMI Category", xlab = "BMI Category") +
+  theme(plot.title = element_text(hjust = .5))
+```
+
+```{r}
+# REMOVE OUTLIERS: 3 times sd or 1.5 times quartile range... clearly impacting
+BMI_dataset %>% 
+  filter(!is.na(FGA)) %>% 
+ggplot(aes(x = RACE, y = FGA, fill = RACE)) +
+  geom_boxplot() +
+  labs(title = "FGA by Race", xlab = "Race") +
+  theme(plot.title = element_text(hjust = .5))
+
+BMI_dataset %>% 
+  filter(!is.na(TMB) & TMB < 1000) %>% 
+ggplot(aes(x = RACE, y = TMB, fill = RACE)) +
+  geom_boxplot() +
+  labs(title = "TMB by Race", xlab = "Race") +
+  theme(plot.title = element_text(hjust = .5))
+
+
+BMI_dataset %>% 
+  filter(!is.na(FGA)) %>% 
+ggplot(aes(x = SEX, y = FGA, fill = SEX)) +
+  geom_boxplot() +
+  labs(title = "FGA by Sex", xlab = "Sex") +
+  theme(plot.title = element_text(hjust = .5))
+
+BMI_dataset %>% 
+  filter(!is.na(TMB) & TMB < 1000) %>% 
+ggplot(aes(x = SEX, y = TMB, fill = SEX)) +
+  geom_boxplot() +
+  labs(title = "TMB by Sex", xlab = "Sex") +
+  theme(plot.title = element_text(hjust = .5))
+
+
+BMI_dataset %>% 
+  filter(!is.na(FGA)) %>% 
+ggplot(aes(x = SMOKING_HISTORY, y = FGA, fill = SMOKING_HISTORY)) +
+  geom_boxplot() +
+  labs(title = "FGA by Smoking History", xlab = "Smoking History") +
+  theme(plot.title = element_text(hjust = .5))
+
+BMI_dataset %>% 
+  filter(!is.na(TMB) & TMB < 1000) %>% 
+ggplot(aes(x = SMOKING_HISTORY, y = TMB, fill = SMOKING_HISTORY)) +
+  geom_boxplot() +
+  labs(title = "TMB by Smoking History", xlab = "Smoking History") +
+  theme(plot.title = element_text(hjust = .5))
+
+
+BMI_dataset %>% 
+  filter(!is.na(FGA)) %>% 
+ggplot(aes(x = BMI_CATEGORIES, y = FGA, fill = BMI_CATEGORIES)) +
+  geom_boxplot() +
+  labs(title = "FGA by BMI Category", xlab = "BMI Category") +
+  theme(plot.title = element_text(hjust = .5))
+
+BMI_dataset %>% 
+  filter(!is.na(TMB) & TMB < 1000) %>% 
+ggplot(aes(x = BMI_CATEGORIES, y = TMB, fill = BMI_CATEGORIES)) +
+  geom_boxplot() +
+  labs(title = "TMB by BMI Category", xlab = "BMI Category") +
+  theme(plot.title = element_text(hjust = .5))
+```
+
+```{r}
+BMI_dataset %>% 
+  filter(!is.na(TMB) & TMB < 27) %>% 
+ggplot(aes(x = RACE, y = TMB, fill = RACE)) +
+  geom_boxplot() +
+  labs(title = "TMB by Race", xlab = "Race") +
+  theme(plot.title = element_text(hjust = .5))
+
+
+BMI_dataset %>% 
+  filter(!is.na(TMB) & TMB < 27) %>% 
+ggplot(aes(x = SEX, y = TMB, fill = SEX)) +
+  geom_boxplot() +
+  labs(title = "TMB by Sex", xlab = "Sex") +
+  theme(plot.title = element_text(hjust = .5))
+
+
+BMI_dataset %>% 
+  filter(!is.na(TMB) & TMB < 27) %>% 
+ggplot(aes(x = SMOKING_HISTORY, y = TMB, fill = SMOKING_HISTORY)) +
+  geom_boxplot() +
+  labs(title = "TMB by Smoking History", xlab = "Smoking History") +
+  theme(plot.title = element_text(hjust = .5))
+
+
+BMI_dataset %>% 
+  filter(!is.na(TMB) & TMB < 27) %>% 
+ggplot(aes(x = BMI_CATEGORIES, y = TMB, fill = BMI_CATEGORIES)) +
+  geom_boxplot() +
+  labs(title = "TMB by BMI Category", xlab = "BMI Category") +
+  theme(plot.title = element_text(hjust = .5))
+```
+
+```{r}
+BMI_dataset %>% 
+  filter(TMB < 1000 & BMI < 100) %>%
+ggplot(aes(x = BMI, y = FGA)) +
+  geom_point() +
+  labs(title = "FGA vs BMI") +
+  theme(plot.title = element_text(hjust = .5))
+
+BMI_dataset %>% 
+  filter(TMB < 1000 & BMI < 100) %>%
+ggplot(aes(x = BMI, y = TMB)) +
+  geom_point() +
+  labs(title = "TMB vs BMI") +
+  theme(plot.title = element_text(hjust = .5))
+```
+
+
+```{r}
+BMI_dataset %>% 
+  filter(TMB < 1000) %>%
+ggplot(aes(x = TMB, y = FGA, col = RACE)) +
+  geom_point() +
+  labs(title = "FGA vs TMB by Race") +
+  theme(plot.title = element_text(hjust = .5))
+
+BMI_dataset %>% 
+  filter(TMB < 1000) %>%
+ggplot(aes(x = TMB, y = FGA, col = SEX)) +
+  geom_point() +
+  labs(title = "FGA vs TMB by Sex") +
+  theme(plot.title = element_text(hjust = .5))
+
+BMI_dataset %>% 
+  filter(TMB < 1000) %>%
+ggplot(aes(x = TMB, y = FGA, col = BMI_CATEGORIES)) +
+  geom_point() +
+  labs(title = "FGA vs TMB by BMI Category") +
+  theme(plot.title = element_text(hjust = .5))
+
+BMI_dataset %>% 
+  filter(TMB < 1000) %>%
+ggplot(aes(x = TMB, y = FGA, col = SMOKING_HISTORY)) +
+  geom_point() +
+  labs(title = "FGA vs TMB by Smoking History") +
+  theme(plot.title = element_text(hjust = .5))
+```
+
+
+## TMB and FGA table
+
+```{r}
+#table_TMB_SMOKE <- fsmry.dmgrph(dat = BMI_dataset %>% filter(!is.na(SMOKING_HISTORY)  & is.finite(TMB)), vars = c("TMB"), vars.cat = c(0), by = c("SMOKING_HISTORY"), prop.by.row = F)
+#table_TMB_SEX <- fsmry.dmgrph(dat = BMI_dataset %>% filter(!is.na(SEX)), vars = c("TMB"), vars.cat = c(0), by = c("SEX"), prop.by.row = F)
+table_TMB_BMI <- fsmry.dmgrph(dat = BMI_dataset %>% filter(!is.na(BMI_CATEGORIES) & !is.na(TMB) & is.finite(TMB)), vars = c("TMB"), vars.cat = c(0), by = c("BMI_CATEGORIES"), prop.by.row = F)
+table_FGA_BMI <- fsmry.dmgrph(dat = BMI_dataset %>% filter(!is.na(BMI_CATEGORIES) & !is.na(FGA)), vars = c("FGA"), vars.cat = c(0), by = c("BMI_CATEGORIES"), prop.by.row = F)
+#table_TMB_RACE <- fsmry.dmgrph(dat = BMI_dataset %>% filter(!is.na(RACE)), vars = c("TMB"), vars.cat = c(0), by = c("RACE"), prop.by.row = F)
+```
+
+
+```{r table1, echo = FALSE, results = 'asis'}
+#kbl(table_TMB_SMOKE[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>TMB By Smoking", align = "l") %>%
+ #kable_classic(full_width = F, position = "center", html_font = "Cambria")
+```
+
+
+```{r}
+#kbl(table_TMB_SEX[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>TMB By Sex", align = "l") %>%
+ #kable_classic(full_width = F, position = "center", html_font = "Cambria")
+
+```
+
+
+```{r}
+kbl(table_TMB_BMI[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>TMB By BMI Category", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+kbl(table_FGA_BMI[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>FGA By BMI Category", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+#kbl(table_TMB_RACE[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>TMB By Race", align = "l") %>%
+ #kable_classic(full_width = F, position = "center", html_font = "Cambria")
+```
+
+
+
+
+## Export table
+```{r}
+#write.csv(BMI_dataset, file = "C:/Amanda's laptop 2023/weill cornell docs/Masters Project Genome Alterations Cancer/Full_BMI.csv", sep = ",")
+```
+
+# Read in current Race, BMI, and "Cancer Therapy and Clonal" Datasets to combine
+```{r, echo=FALSE}
+library(readxl)
+gender_data <- suppressWarnings(read_xlsx("combined_data_TMB_Gender.xlsx"))
+BMI_data <- read_csv("C:/Amanda's laptop 2023/weill cornell docs/Masters Project Genome Alterations Cancer/Full_BMI.csv")
+cancer_clonal <- read_csv("cancer therapy and clonal dataset.csv")
+```
+
+```{r, echo = FALSE}
+update_gender <- gender_data %>% mutate(Study = study_id, PATIENT_ID = patient_id, SAMPLE_ID = sample_id, CANCER_TYPE = cancer_type, SITE_OF_TUMOR_TISSUE = primary_tumor_site, SEX = sex, RACE = race_category, AGE = age, OS_STATUS = overall_survival_status, OS_MONTHS = overall_survival_months, SMOKING_HISTORY = as.character(smoking_history), TUMOR_PURITY = tumor_purity, METASTATIC = metastatic_site) %>% dplyr::select(Study, PATIENT_ID, SAMPLE_ID, CANCER_TYPE, SITE_OF_TUMOR_TISSUE, SEX, RACE, AGE, OS_STATUS, OS_MONTHS, SMOKING_HISTORY, TUMOR_PURITY, METASTATIC, TMB, FGA)
+
+update_BMI <- BMI_data %>% dplyr::select(-c(ETHNICITY, SMOKING_PACK_YEARS, BMI, BMI_CATEGORIES, Code_frequency))
+
+update_clonal <- cancer_clonal %>% mutate(Study = `Study ID`, PATIENT_ID = `Patient ID`, SAMPLE_ID = `Sample ID`, AGE = Age, SEX = Sex, RACE = Race, CANCER_TYPE = `Cancer Type`, SITE_OF_TUMOR_TISSUE = NA, OS_MONTHS = NA, OS_STATUS = NA, SMOKING_HISTORY = as.character(`Smoking Status`), TUMOR_PURITY = NA, METASTATIC = NA, FGA = NA, TMB = `TMB (nonsynonymous)`) %>% dplyr::select(Study, PATIENT_ID, SAMPLE_ID, CANCER_TYPE, SITE_OF_TUMOR_TISSUE, SEX, RACE, AGE, OS_STATUS, OS_MONTHS, SMOKING_HISTORY, TUMOR_PURITY, METASTATIC, TMB, FGA)
+```
+
+# Combine datasets
+```{r}
+# checked using merge and no common columns
+smoking_data <- as.data.frame(rbind(update_clonal, update_gender, update_BMI)) %>% mutate(SMOKING_HISTORY = factor(SMOKING_HISTORY)) 
+smoking_data <- smoking_data %>% mutate(OS_STATUS = ifelse(OS_STATUS == "0:LIVING", "0", ifelse(OS_STATUS == "1:DECEASED", "1", ifelse(OS_STATUS == "NA", NA, OS_STATUS))), SMOKING_HISTORY = factor(ifelse(SMOKING_HISTORY == "Unknown" | SMOKING_HISTORY == "Prev/Curr Smoker" | SMOKING_HISTORY == "NA", NA, ifelse(SMOKING_HISTORY == "Current Reformed Smoker For > 15 Years" | SMOKING_HISTORY == "Current Reformed Smoker For < Or = 15 Years" | SMOKING_HISTORY == "Current Reformed Smoker, Duration Not Specified" | SMOKING_HISTORY == "Former Smoker", "Former", ifelse(SMOKING_HISTORY == "Lifelong Non-Smoker" | SMOKING_HISTORY == "Never smoker", "Never", ifelse(SMOKING_HISTORY == "Current Smoker", "Current", as.character(SMOKING_HISTORY)))))), RACE = factor(ifelse(RACE == "BLACK", "Black", ifelse(RACE == "WHITE", "White", as.character(RACE)))), AGE = as.numeric(AGE), TMB = as.numeric(TMB), TUMOR_PURITY = as.numeric(TUMOR_PURITY), FGA = as.numeric(FGA), OS_MONTHS = as.numeric(OS_MONTHS)) %>% filter(!(is.na(SMOKING_HISTORY)))
+
+smoking_data <- smoking_data %>% mutate(RACE = factor(ifelse(RACE == "NA" | is.na(RACE), "Unknown", as.character(RACE))))
+```
+
+## Further Data Cleaning
+```{r}
+smoking_data <- smoking_data %>% mutate(CANCER_TYPE = ifelse(CANCER_TYPE == "Pheochromocytoma" | CANCER_TYPE == "Adrenocortical Adenoma" | CANCER_TYPE == "Adrenocortical Carcinoma", "Adrenal Gland", ifelse(CANCER_TYPE == "Ampullary Carcinoma", "Ampullary Cancer", ifelse(CANCER_TYPE == "B-Lymphoblastic Leukemia/Lymphoma" | CANCER_TYPE == "Blood Cancer, NOS" | CANCER_TYPE == "Leukemia" | CANCER_TYPE == "Hodgkin Lymphoma" | CANCER_TYPE == "Mature B-Cell Neoplasms" | CANCER_TYPE == "Mature T and NK Neoplasms" | CANCER_TYPE == "Non-Hodgkin Lymphoma" | CANCER_TYPE == "T-Lymphoblastic Leukemia/Lymphoma" | CANCER_TYPE == "Thymic Tumor", "Blood Cancer", ifelse(CANCER_TYPE == "Biliary Tract Cancer, NOS", "Hepatobiliary Cancer", ifelse(CANCER_TYPE == "Bladder/Urinary Tract Cancer", "Bladder Cancer", ifelse(CANCER_TYPE == "Choroid Plexus Tumor" | CANCER_TYPE == "Pineal Tumor" | CANCER_TYPE == "Sellar Tumor" | CANCER_TYPE == "Miscellaneous Brain Tumor" | CANCER_TYPE == "Glioma" | CANCER_TYPE == "Miscellaneous Neuroepithelial Tumor" | CANCER_TYPE == "Embryonal Tumor", "CNS Cancer", ifelse(CANCER_TYPE == "Gastrointestinal Neuroendocrine Tumor" | CANCER_TYPE == "Gastrointestinal Stromal Tumor", "Esophagogastric Cancer", ifelse(CANCER_TYPE == "Renal Cell Carcinoma" | CANCER_TYPE == "Wilms Tumor", "Kidney", ifelse(CANCER_TYPE == "Nerve Sheath Tumor", "Peripheral Nervous System", ifelse(CANCER_TYPE == "Salivary Gland Cancer", "Head and Neck Cancer", ifelse(CANCER_TYPE == "Skin Cancer, Non-Melanoma" | CANCER_TYPE == "Melanoma", "Skin", ifelse(CANCER_TYPE == "Small Bowel Cancer", "Colorectal Cancer", as.character(CANCER_TYPE))))))))))))))
+
+
+smoking_data <- smoking_data %>% mutate(SITE_OF_TUMOR_TISSUE = ifelse(SITE_OF_TUMOR_TISSUE == "Pancreas" | SITE_OF_TUMOR_TISSUE == "Mesentery" | SITE_OF_TUMOR_TISSUE == "Bile Duct" | SITE_OF_TUMOR_TISSUE == "Appendix" | SITE_OF_TUMOR_TISSUE == "Gallbladder" | SITE_OF_TUMOR_TISSUE == "Ampulla of Vater" | SITE_OF_TUMOR_TISSUE == "Liver" | SITE_OF_TUMOR_TISSUE == "Stomach" | SITE_OF_TUMOR_TISSUE == "GE Junction" | SITE_OF_TUMOR_TISSUE == "Jejunum" | SITE_OF_TUMOR_TISSUE == "Intraabdominal" |  SITE_OF_TUMOR_TISSUE == "Esophagus" | SITE_OF_TUMOR_TISSUE == "Retroperitoneum"|  SITE_OF_TUMOR_TISSUE == "Peritoneum" | SITE_OF_TUMOR_TISSUE == "Spleen" | SITE_OF_TUMOR_TISSUE == "Abdomen" | SITE_OF_TUMOR_TISSUE == "Omentum" | SITE_OF_TUMOR_TISSUE == "Abdominal Wall", "Non-specified Abdomen", ifelse(SITE_OF_TUMOR_TISSUE == "Lymph node" | SITE_OF_TUMOR_TISSUE == "Lymph Node" | SITE_OF_TUMOR_TISSUE == "Tonsil" | SITE_OF_TUMOR_TISSUE == "Thymus", "Lymphatic", ifelse(SITE_OF_TUMOR_TISSUE == "Kidney" | SITE_OF_TUMOR_TISSUE == "Urethra" | SITE_OF_TUMOR_TISSUE == "Periurethra" | SITE_OF_TUMOR_TISSUE == "Bladder" | SITE_OF_TUMOR_TISSUE == "Upper Tract", "Urinary", ifelse(is.na(SITE_OF_TUMOR_TISSUE) | SITE_OF_TUMOR_TISSUE == "Cancer of Unknown Primary" | SITE_OF_TUMOR_TISSUE == "NA" | SITE_OF_TUMOR_TISSUE == "NA's", "Unknown", ifelse(SITE_OF_TUMOR_TISSUE == "Uterus" | SITE_OF_TUMOR_TISSUE == "Cervix" | SITE_OF_TUMOR_TISSUE == "Vulva" | SITE_OF_TUMOR_TISSUE == "Vagina" | SITE_OF_TUMOR_TISSUE == "Cervical" | SITE_OF_TUMOR_TISSUE == "Ovary", "Female Reproductive", ifelse(SITE_OF_TUMOR_TISSUE == "Pleura" | SITE_OF_TUMOR_TISSUE == "Heart" | SITE_OF_TUMOR_TISSUE == "Pleural Fluid" | SITE_OF_TUMOR_TISSUE == "Diaphragm" | SITE_OF_TUMOR_TISSUE == "Lung" | SITE_OF_TUMOR_TISSUE == "Trachea" | SITE_OF_TUMOR_TISSUE == "Chest Wall" | SITE_OF_TUMOR_TISSUE == "Mediastinum", "Chest", ifelse(SITE_OF_TUMOR_TISSUE == "Major Salivary Gland" | SITE_OF_TUMOR_TISSUE == "Salivary Gland" | SITE_OF_TUMOR_TISSUE == "Parotid" | SITE_OF_TUMOR_TISSUE == "Parotid Gland" | SITE_OF_TUMOR_TISSUE == "Orbit" | SITE_OF_TUMOR_TISSUE == "Ear Canal" | SITE_OF_TUMOR_TISSUE == "Tongue" | SITE_OF_TUMOR_TISSUE == "Forehead" | SITE_OF_TUMOR_TISSUE == "Scalp" | SITE_OF_TUMOR_TISSUE == "Maxilla" | SITE_OF_TUMOR_TISSUE == "Neck" | SITE_OF_TUMOR_TISSUE == "Hypopharynx" | SITE_OF_TUMOR_TISSUE == "Conjunctiva" | SITE_OF_TUMOR_TISSUE == "Eye" | SITE_OF_TUMOR_TISSUE == "Oral Cavity" | SITE_OF_TUMOR_TISSUE == "Oropharynx" | SITE_OF_TUMOR_TISSUE == "Nasopharynx" | SITE_OF_TUMOR_TISSUE == "Minor Salivary Gland" | SITE_OF_TUMOR_TISSUE == "Sinus" | SITE_OF_TUMOR_TISSUE == "Sinonasal" | SITE_OF_TUMOR_TISSUE == "Larynx" | SITE_OF_TUMOR_TISSUE == "Pharynx" | SITE_OF_TUMOR_TISSUE == "Maxillary Sinus", "Head and Neck", ifelse(SITE_OF_TUMOR_TISSUE == "Sacral Mass" | SITE_OF_TUMOR_TISSUE == "Epidural" | SITE_OF_TUMOR_TISSUE == "Spinal cord", "Spine", ifelse(SITE_OF_TUMOR_TISSUE == "Penis" | SITE_OF_TUMOR_TISSUE == "Testis" | SITE_OF_TUMOR_TISSUE == "Prostate", "Male Reproductive", ifelse(SITE_OF_TUMOR_TISSUE == "Anal" | SITE_OF_TUMOR_TISSUE == "Sigmoid Colon" | SITE_OF_TUMOR_TISSUE == "Rectosigmoid Colon" | SITE_OF_TUMOR_TISSUE == "Cecum" | SITE_OF_TUMOR_TISSUE == "Ascending Colon" | SITE_OF_TUMOR_TISSUE == "Colon" | SITE_OF_TUMOR_TISSUE == "Colorectal NOS" | SITE_OF_TUMOR_TISSUE == "Transverse Colon" | SITE_OF_TUMOR_TISSUE == "Small Bowel" | SITE_OF_TUMOR_TISSUE == "Anus" | SITE_OF_TUMOR_TISSUE == "Duodenum" | SITE_OF_TUMOR_TISSUE == "Duodenum-Jejunum" | SITE_OF_TUMOR_TISSUE == "Descending Colon" | SITE_OF_TUMOR_TISSUE == "Small Intestine" | SITE_OF_TUMOR_TISSUE == "Rectum" | SITE_OF_TUMOR_TISSUE == "Ileum" | SITE_OF_TUMOR_TISSUE == "Ileocecal Valve", "Colorectal", as.character(SITE_OF_TUMOR_TISSUE))))))))))))
+
+smoking_data <- smoking_data %>% mutate(SITE_OF_TUMOR_TISSUE = ifelse(SITE_OF_TUMOR_TISSUE == "Arm" | SITE_OF_TUMOR_TISSUE == "Foot" | SITE_OF_TUMOR_TISSUE == "Thigh" | SITE_OF_TUMOR_TISSUE == "Leg" | SITE_OF_TUMOR_TISSUE == "Axilla" | SITE_OF_TUMOR_TISSUE == "Femoral Tendon" | SITE_OF_TUMOR_TISSUE == "Forearm" | SITE_OF_TUMOR_TISSUE == "Lower Extremity" | SITE_OF_TUMOR_TISSUE == "Upper Extremity" | SITE_OF_TUMOR_TISSUE == "Femoral Vein" | SITE_OF_TUMOR_TISSUE == "Nailbed", "Extremity", ifelse(SITE_OF_TUMOR_TISSUE == "Arm" | SITE_OF_TUMOR_TISSUE == "Foot" | SITE_OF_TUMOR_TISSUE == "Thigh" | SITE_OF_TUMOR_TISSUE == "Leg" | SITE_OF_TUMOR_TISSUE == "Axilla" | SITE_OF_TUMOR_TISSUE == "Femoral Tendon" | SITE_OF_TUMOR_TISSUE == "Forearm" | SITE_OF_TUMOR_TISSUE == "Lower Extremity" | SITE_OF_TUMOR_TISSUE == "Upper Extremity" | SITE_OF_TUMOR_TISSUE == "Femoral Vein" | SITE_OF_TUMOR_TISSUE == "Nailbed", "Extremity", ifelse(SITE_OF_TUMOR_TISSUE == "Fibula" | SITE_OF_TUMOR_TISSUE == "Rib" | SITE_OF_TUMOR_TISSUE == "Knee", "Bone", ifelse(SITE_OF_TUMOR_TISSUE == "Spine", "Back", ifelse(SITE_OF_TUMOR_TISSUE == "Pituitary Gland", "Brain", ifelse(SITE_OF_TUMOR_TISSUE == "Buttock", "Muscle", ifelse(SITE_OF_TUMOR_TISSUE == "Adrenal Gland" | SITE_OF_TUMOR_TISSUE == "Thyroid", "Endocrine", ifelse(SITE_OF_TUMOR_TISSUE == "Hip" | SITE_OF_TUMOR_TISSUE == "Groin" | SITE_OF_TUMOR_TISSUE == "Perineum" | SITE_OF_TUMOR_TISSUE == "Pubic Mass" | SITE_OF_TUMOR_TISSUE == "Pelvis", "Non-specified Pelvis", as.character(SITE_OF_TUMOR_TISSUE))))))))))
+
+tumor_site <- smoking_data %>% transmute(tumor_site = ifelse(is.na(SITE_OF_TUMOR_TISSUE), "Unknown", SITE_OF_TUMOR_TISSUE))
+
+smoking_data <- cbind(smoking_data, tumor_site) %>% mutate(SITE_OF_TUMOR_TISSUE = tumor_site) %>% dplyr::select(-tumor_site)
+                                                     
+# should histiocytosis be blood cancer
+```
+
+```{r}
+
+smoking_data_FGA <- smoking_data %>% filter(!is.na(FGA))
+  
+smoking_data_TMB <- smoking_data %>% filter(!is.na(TMB))
+```
+
+# Descriptive Statistics 
+
+## Function for tests in tables
+```{r}
+pvalue <- function(x, ...) {
+    # Construct vectors of data y, and groups (strata) g
+    y <- unlist(x)
+    g <- factor(rep(1:length(x), times=sapply(x, length)))
+    if (is.numeric(y)) {
+      # variance and normality check within group
+      vector <- c()
+      if (bartlett.test(y ~ g)$p.value >= .05 & any((for (group_name in unique(g)){vector <- append(vector, ad.test(subset(y, g == group_name))$p.value)}) >= .05)){
+        # For numeric variables, perform anova
+        if(length(unique(g)) == 2){
+          p <- t.test(y ~ g)$p.value
+        }
+        else{
+        p <- summary(aov(y ~ g))[[1]][["Pr(>F)"]][[1]]
+        }
+    } else {
+      p <- kruskal.test(y, g)$p.value
+    }
+    }
+    else{
+      if (all(table(y, g) > 5)) {
+        # For categorical variables, perform a chi-squared test of independence
+        p <- chisq.test(table(y, g))$p.value
+      }
+      else {
+        p <- fisher.test(table(y,g), simulate.p.value = TRUE)$p.value
+      }
+    }
+    # Format the p-value, using an HTML entity for the less-than sign.
+    # The initial empty string places the output on the line below the variable label.
+    c("", sub("<", "&lt;", format.pval(p, digits=3, eps=0.001)))
+}
+#(for (group_name in unique(smoking_data_FGA$SEX)){append(vector, prop.test(subset(smoking_data_FGA, SEX == group_name)$FGA)$p.value)
+# fisher.test(table(is.na(smoking_data_FGA$AGE), smoking_data_FGA$SEX))
+
+# could do kruskal wallis for non-parametric but what about categorical data
+```
+
+```{r}
+missing_prop <- function(x, ...) {
+    # Construct vectors of data y, and groups (strata) g
+    y <- unlist(x)
+    g <- factor(rep(1:length(x), times=sapply(x, length)))
+    if (any(is.na(y) == TRUE)){
+      if (all(table(is.na(y), g) > 5)) {
+        # For > 5, perform a chi-squared test of independence
+        p <- chisq.test(table(is.na(y), g))
+        }
+      else {
+      p <- fisher.test(table(is.na(y), g), simulate.p.value = TRUE)
+      }
+    }
+    else {
+      p <- NA
+    }
+    # Format the p-value, using an HTML entity for the less-than sign.
+    # The initial empty string places the output on the line below the variable label.
+    c("", sub("<", "&lt;", format.pval(p, digits=3, eps=0.001)))
+}
+```
+
+## Tables
+
+```{r}
+# need "missing" for tables to work properly
+smoking_data_FGA <- smoking_data_FGA %>% mutate(SEX = ifelse(SEX == "Unknown", NA, as.character(SEX)), RACE = ifelse(RACE == "Unknown", NA, as.character(RACE)), AGE = ifelse(AGE == "Unknown", NA, as.numeric(AGE)))
+
+smoking_data_TMB <- smoking_data_TMB %>% mutate(SEX = ifelse(SEX == "Unknown", NA, as.character(SEX)), RACE = ifelse(RACE == "Unknown", NA, as.character(RACE)), AGE = ifelse(AGE == "Unknown", NA, as.numeric(AGE)))
+```
+
+```{r}
+post_clean <- read.csv("C:/Amanda's laptop 2023/weill cornell docs/Masters Project Genome Alterations Cancer/cleaned_data(in).csv") %>% group_by(PATIENT_ID) %>% mutate(n_samples = factor(n()))
+
+smoking_data2 <- smoking_data %>% group_by(PATIENT_ID) %>% mutate(n_samples = factor(n()), SEX = ifelse(SEX == "Unknown", NA, SEX), RACE = ifelse(RACE == "Unknown", NA, as.character(RACE)))
+```
+
+```{r}
+
+table1(~Study + n_samples + FGA + TMB + SMOKING_HISTORY + SEX + RACE + CANCER_TYPE + TUMOR_PURITY + AGE, data = smoking_data2)
+table1(~Study + n_samples + FGA + TMB + SMOKING_HISTORY + SEX + RACE + CANCER_TYPE + TUMOR_PURITY + AGE, data = post_clean)
+
+#table1(~Study + TMB + FGA + SMOKING_HISTORY + SEX + RACE + CANCER_TYPE + TUMOR_PURITY + AGE + OS_MONTHS + OS_STATUS, data = smoking_data_TMB)
+```
+
+
+```{r}
+#table1(~ TMB + SEX + SMOKING_HISTORY + AGE + OS_MONTHS + OS_STATUS + TUMOR_PURITY + CANCER_TYPE + Study | RACE, data = smoking_data_TMB %>% filter(!(is.na(RACE))), extra.col=list(`P-value`=pvalue))
+
+#table1(~ FGA + SEX + SMOKING_HISTORY + AGE + OS_MONTHS + OS_STATUS + TUMOR_PURITY + CANCER_TYPE + Study | RACE, data = smoking_data_FGA %>% filter(!(is.na(RACE))), extra.col=list(`P-value`=pvalue))
+
+#table1(~AGE + OS_MONTHS + TMB + TUMOR_PURITY + FGA + SEX + SITE_OF_TUMOR_TISSUE + METASTATIC + OS_STATUS + SMOKING_HISTORY + CANCER_TYPE + Study | RACE, data = smoking_data, extra.col=list(`P-value`=pvalue))
+```
+
+```{r}
+#table1(~AGE + OS_MONTHS + OS_STATUS + TUMOR_PURITY + FGA + RACE + SMOKING_HISTORY + CANCER_TYPE + Study | SEX, data = smoking_data_FGA %>% filter(!(is.na(SEX))), extra.col = list(`P-value` = pvalue))
+```
+
+# Race
+
+## Combine datasets
+```{r}
+# checked using merge and no common columns
+race_data <- as.data.frame(rbind(update_clonal, update_gender, update_BMI)) %>% mutate(SMOKING_HISTORY = factor(SMOKING_HISTORY)) 
+race_data <- race_data %>% mutate(OS_STATUS = ifelse(OS_STATUS == "0:LIVING", "0", ifelse(OS_STATUS == "1:DECEASED", "1", ifelse(OS_STATUS == "NA", NA, OS_STATUS))), SMOKING_HISTORY = factor(ifelse(SMOKING_HISTORY == "Unknown" | SMOKING_HISTORY == "Prev/Curr Smoker" | SMOKING_HISTORY == "NA", NA, ifelse(SMOKING_HISTORY == "Current Reformed Smoker For > 15 Years" | SMOKING_HISTORY == "Current Reformed Smoker For < Or = 15 Years" | SMOKING_HISTORY == "Current Reformed Smoker, Duration Not Specified" | SMOKING_HISTORY == "Former Smoker", "Former", ifelse(SMOKING_HISTORY == "Lifelong Non-Smoker" | SMOKING_HISTORY == "Never smoker", "Never", ifelse(SMOKING_HISTORY == "Current Smoker", "Current", as.character(SMOKING_HISTORY)))))), RACE = factor(ifelse(RACE == "BLACK", "Black", ifelse(RACE == "WHITE", "White", as.character(RACE)))), AGE = as.numeric(AGE), TMB = as.numeric(TMB), TUMOR_PURITY = as.numeric(TUMOR_PURITY), FGA = as.numeric(FGA), OS_MONTHS = as.numeric(OS_MONTHS)) %>% filter(!(is.na(RACE)))
+
+race_data <- race_data %>% mutate(RACE = factor(ifelse(RACE == "NA" | is.na(RACE), "Unknown", as.character(RACE))))
+```
+
+```{r}
+race_data <- race_data %>% mutate(RACE = factor(ifelse(RACE == "BLACK" | RACE == "African" | RACE == "African_American" | RACE == "Black" | RACE == "Black or african american" | RACE == "Black or African American" | RACE == "Black or African AMERICAN" | RACE == "BLACK OR AFRICAN AMERICAN", "Black", ifelse(RACE == "WHITE" | RACE == "Caucasian" | RACE == "White", "White", ifelse(RACE == "ASIAN" | RACE == "Asian-far east/indian subcont" | RACE == "ASIAN-FAR EAST/INDIAN SUBCONT" | RACE == "East_Indian", "Asian", ifelse(RACE == "American Indian or Alaska Native" | RACE == "AMERICAN INDIAN OR ALASKA NATIVE" | RACE == "Native american-am ind/alaska" | RACE == "NATIVE AMERICAN-AM IND/ALASKA" | RACE == "American_Indian" | RACE == "Native hawaiian or pacific isl" | RACE == "NATIVE HAWAIIAN OR PACIFIC ISL" | RACE == "North_African" | RACE == "OTHER" | RACE == "Turkish", "Other", NA)))))) %>% filter(!is.na(RACE))
+```
+
+# Sex
+(want to ensure even with all data being used there are no differences - expect to be same)
+
+## Combine data
+```{r}
+# checked using merge and no common columns
+sex_data <- as.data.frame(rbind(update_clonal, update_gender, update_BMI)) %>% mutate(SMOKING_HISTORY = factor(SEX)) 
+sex_data <- sex_data %>% mutate(OS_STATUS = ifelse(OS_STATUS == "0:LIVING", "0", ifelse(OS_STATUS == "1:DECEASED", "1", ifelse(OS_STATUS == "NA", NA, OS_STATUS))), SMOKING_HISTORY = factor(ifelse(SMOKING_HISTORY == "Unknown" | SMOKING_HISTORY == "Prev/Curr Smoker" | SMOKING_HISTORY == "NA", NA, ifelse(SMOKING_HISTORY == "Current Reformed Smoker For > 15 Years" | SMOKING_HISTORY == "Current Reformed Smoker For < Or = 15 Years" | SMOKING_HISTORY == "Current Reformed Smoker, Duration Not Specified" | SMOKING_HISTORY == "Former Smoker", "Former", ifelse(SMOKING_HISTORY == "Lifelong Non-Smoker" | SMOKING_HISTORY == "Never smoker", "Never", ifelse(SMOKING_HISTORY == "Current Smoker", "Current", as.character(SMOKING_HISTORY)))))), RACE = factor(ifelse(RACE == "BLACK", "Black", ifelse(RACE == "WHITE", "White", as.character(RACE)))), AGE = as.numeric(AGE), TMB = as.numeric(TMB), TUMOR_PURITY = as.numeric(TUMOR_PURITY), FGA = as.numeric(FGA), OS_MONTHS = as.numeric(OS_MONTHS)) %>% filter(!(is.na(RACE)))
+
+sex_data <- sex_data %>% mutate(SEX = factor(ifelse(SEX == "Unknown" | SEX == "NA" | is.na(SEX), NA, as.character(SEX)))) %>% filter(!is.na(SEX))
+```
+
+```{r}
+library(lsr)
+#table1(~TMB + SEX + RACE + CANCER_TYPE + AGE + OS_MONTHS + OS_STATUS + TUMOR_PURITY + Study | SMOKING_HISTORY, data = smoking_data_TMB %>% filter(!(is.na(SMOKING_HISTORY))), extra.col=list(`Group Differences P-value`=pvalue, `Missing Proportion P-value` = missing_prop))
+
+table_smoke_FGA <- fsmry.dmgrph(dat = smoking_data_FGA %>% filter(!is.na(SMOKING_HISTORY)), vars = c("FGA", "TMB", "RACE", "SEX", "CANCER_TYPE", "TUMOR_PURITY", "AGE", "OS_MONTHS", "OS_STATUS", "Study"), vars.cat = c(0,0,1,1,1,0,0,0,1,1), by = "SMOKING_HISTORY", prop.by.row = F)
+
+kbl(table_smoke_FGA[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>Variables with FGA By Smoking History", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+
+
+table_smoke_TMB <- fsmry.dmgrph(dat = smoking_data_TMB %>% filter(!is.na(SMOKING_HISTORY)), vars = c("TMB", "FGA", "RACE", "SEX", "CANCER_TYPE", "TUMOR_PURITY", "AGE", "OS_MONTHS", "OS_STATUS", "Study"), vars.cat = c(0,0,1,1,1,0,0,0,1,1), by = "SMOKING_HISTORY", prop.by.row = F)
+
+kbl(table_smoke_TMB[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>Variables with TMB By Smoking History", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+
+# checking effect size - Small: 0.2, Medium: 0.5, Large: 0.8
+etaSquared(aov(TMB~RACE, race_data))
+cohensD(TMB~SEX, sex_data)
+etaSquared(aov(TMB~SMOKING_HISTORY, smoking_data))
+
+etaSquared(aov(FGA~RACE, race_data))
+cohensD(FGA~SEX, sex_data)
+etaSquared(aov(FGA~SMOKING_HISTORY, smoking_data))
+```
+
+```{r}
+table_race_FGA <- fsmry.dmgrph(dat = smoking_data_FGA %>% filter(!is.na(RACE)), vars = c("FGA", "TMB", "SMOKING_HISTORY", "SEX", "CANCER_TYPE", "TUMOR_PURITY", "AGE", "OS_MONTHS", "OS_STATUS", "Study"), vars.cat = c(0,0,1,1,1,0,0,0,1,1), by = "RACE", prop.by.row = F)
+
+kbl(table_race_FGA[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>Variables with FGA By Race", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+
+
+table_race_TMB <- fsmry.dmgrph(dat = smoking_data_FGA %>% filter(!is.na(RACE)), vars = c("FGA", "TMB", "SMOKING_HISTORY", "SEX", "CANCER_TYPE", "TUMOR_PURITY", "AGE", "OS_MONTHS", "OS_STATUS", "Study"), vars.cat = c(0,0,1,1,1,0,0,0,1,1), by = "RACE", prop.by.row = F)
+
+kbl(table_race_TMB[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>Variables with TMB By Race", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+```
+
+
+
+```{r}
+colnames(smoking_data) <- c("Study", "PATIENT_ID", "SAMPLE_ID", "CANCER_TYPE", "SITE_OF_TUMOR_TISSUE", "SEX", "RACE", "AGE", "OS_STATUS", "OS_MONTHS", "SMOKING_HISTORY", "TUMOR_PURITY", "METASTATIC", "TMB", "FGA")
+```
+
+# Export table
+```{r}
+write.csv(smoking_data_FGA, file = "Full_smoking_FGA.csv", sep = ",")
+write.csv(smoking_data_TMB, file = "Full_smoking_TMB.csv", sep = ",")
+```
+
+
+```{r, echo=FALSE}
+gender_data <- suppressWarnings(read_xlsx("combined_data_TMB_Gender.xlsx"))
+BMI_data <- read_csv("C:/Amanda's laptop 2023/weill cornell docs/Masters Project Genome Alterations Cancer/Full_BMI.csv")
+cancer_clonal <- read_csv("cancer therapy and clonal dataset.csv")
+```
+
+```{r, echo = FALSE}
+update_gender <- gender_data %>% mutate(Study = study_id, PATIENT_ID = patient_id, SAMPLE_ID = sample_id, CANCER_TYPE = cancer_type, SITE_OF_TUMOR_TISSUE = primary_tumor_site, SEX = sex, RACE = race_category, AGE = age, OS_STATUS = overall_survival_status, OS_MONTHS = overall_survival_months, SMOKING_HISTORY = as.character(smoking_history), TUMOR_PURITY = tumor_purity, METASTATIC = metastatic_site) %>% dplyr::select(Study, PATIENT_ID, SAMPLE_ID, CANCER_TYPE, SITE_OF_TUMOR_TISSUE, SEX, RACE, AGE, OS_STATUS, OS_MONTHS, SMOKING_HISTORY, TUMOR_PURITY, METASTATIC, TMB, FGA)
+
+update_BMI <- BMI_data %>% dplyr::select(-c(ETHNICITY, SMOKING_PACK_YEARS, BMI, BMI_CATEGORIES, Code_frequency))
+
+update_clonal <- cancer_clonal %>% mutate(Study = `Study ID`, PATIENT_ID = `Patient ID`, SAMPLE_ID = `Sample ID`, AGE = Age, SEX = Sex, RACE = Race, CANCER_TYPE = `Cancer Type`, SITE_OF_TUMOR_TISSUE = NA, OS_MONTHS = NA, OS_STATUS = NA, SMOKING_HISTORY = as.character(`Smoking Status`), TUMOR_PURITY = NA, METASTATIC = NA, FGA = NA, TMB = `TMB (nonsynonymous)`) %>% dplyr::select(Study, PATIENT_ID, SAMPLE_ID, CANCER_TYPE, SITE_OF_TUMOR_TISSUE, SEX, RACE, AGE, OS_STATUS, OS_MONTHS, SMOKING_HISTORY, TUMOR_PURITY, METASTATIC, TMB, FGA)
+```
+
+
+
+## Plots
+```{r}
+race_data %>%
+filter(!is.na(FGA)) %>% 
+  group_by(RACE) %>% 
+  summarise(FGA = mean(FGA)) %>%
+ggplot(aes(x = RACE, y = FGA, fill = RACE)) +
+  geom_col() +
+  labs(title = "FGA by Race", xlab = "Race") +
+  theme(plot.title = element_text(hjust = .5))
+
+race_data %>%
+filter(!is.na(TMB)) %>% 
+  group_by(RACE) %>% 
+  summarise(TMB = mean(TMB)) %>%
+ggplot(aes(x = RACE, y = TMB, fill = RACE)) +
+  geom_col() +
+  labs(title = "TMB by Race", xlab = "Race") +
+  theme(plot.title = element_text(hjust = .5))
+```
+
+## Table
+```{r}
+table_FGA_RACE <- fsmry.dmgrph(dat = race_data %>% filter(!is.na(FGA)), vars = c("FGA"), vars.cat = c(0), by = c("RACE"), prop.by.row = F)
+kbl(table_FGA_RACE[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>FGA By Race", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+
+table_TMB_RACE <- fsmry.dmgrph(dat = race_data %>% filter(!is.na(TMB)), vars = c("TMB"), vars.cat = c(0), by = c("RACE"), prop.by.row = F)
+kbl(table_TMB_RACE[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>TMB By Race", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+```
+
+## Survival
+```{r}
+surv_FGA <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ FGA + RACE, data = race_data %>% filter(!is.na(FGA)))
+summary(surv_FGA) # significant
+
+survFGA_fit <- survfit(surv_FGA)
+
+plot(survFGA_fit, main = "Survival Curve", xlab = "Time", ylab = "Survival Probability")
+
+surv_TMB <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ TMB + RACE, data = race_data %>% filter(!is.na(TMB))) # SIGNIFICANT
+summary(surv_TMB)
+survTMB_fit <- survfit(surv_TMB)
+plot(survTMB_fit, main = "Survival Curve", xlab = "Time", ylab = "Survival Probability")
+```
+
+
+```{r}
+#write.csv(race_data, file = "C:/Amanda's laptop 2023/weill cornell docs/Masters Project Genome Alterations Cancer/Full_race.csv", sep = ",")
+```
+
+## Plot
+
+```{r}
+sex_data %>%
+  filter(!is.na(FGA)) %>%
+ggplot(aes(x = SEX, y = FGA, fill = SEX)) +
+  geom_boxplot() +
+  labs(title = "FGA by Sex", xlab = "Sex") +
+  theme(plot.title = element_text(hjust = .5))
+
+sex_data %>%
+  filter(!is.na(TMB)) %>%
+ggplot(aes(x = SEX, y = TMB, fill = SEX)) +
+  geom_boxplot() +
+  labs(title = "TMB by Sex", xlab = "Sex") +
+  theme(plot.title = element_text(hjust = .5))
+```
+
+
+## Table
+```{r}
+table_FGA_SEX <- fsmry.dmgrph(dat = sex_data %>% filter(!is.na(FGA)), vars = c("FGA"), vars.cat = c(0), by = c("SEX"), prop.by.row = F)
+kbl(table_FGA_SEX[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>FGA By Sex", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+
+table_TMB_SEX <- fsmry.dmgrph(dat = sex_data %>% filter(!is.na(TMB)), vars = c("TMB"), vars.cat = c(0), by = c("SEX"), prop.by.row = F)
+kbl(table_TMB_SEX[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>TMB By Sex", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+```
+
+
+## Survival
+```{r}
+surv_FGA <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ FGA + SEX, data = sex_data %>% filter(!is.na(FGA)))
+summary(surv_FGA) # significant
+
+survFGA_fit <- survfit(surv_FGA)
+plot(survFGA_fit, main = "Survival Curve", xlab = "Time", ylab = "Survival Probability")
+
+surv_TMB <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ TMB + SEX, data = sex_data %>% filter(!is.na(TMB))) # SIGNIFICANT
+summary(surv_TMB) 
+survTMB_fit <- survfit(surv_TMB)
+plot(survTMB_fit, main = "Survival Curve", xlab = "Time", ylab = "Survival Probability")
+```
+
+```{r}
+#write.csv(sex_data, file = "C:/Amanda's laptop 2023/weill cornell docs/Masters Proje
+```
+
+```{r}
+sex_data <- read.csv("C:/Amanda's laptop 2023/weill cornell docs/Masters Project Genome Alterations Cancer/Full_sex.csv")
+race_data <- read.csv("C:/Amanda's laptop 2023/weill cornell docs/Masters Project Genome Alterations Cancer/Full_race.csv")
+BMI_data <- read.csv("C:/Amanda's laptop 2023/weill cornell docs/Masters Project Genome Alterations Cancer/Full_BMI.csv") %>% filter(!is.na(BMI_CATEGORIES))
+```
+
+
+```{r}
+# log2(smoking_data_TMB$TMB + 1) AND sqrt(FGA)
+```
+
+## Plots
+```{r}
+g_FGA_race <- smoking_data_FGA %>% 
+  group_by(RACE) %>% 
+  summarise(FGA = mean(FGA)) %>%
+ggplot(aes(x = RACE, y = FGA, fill = RACE)) +
+  geom_col() +
+  labs(title = "FGA by Race", xlab = "Race") +
+  theme(plot.title = element_text(hjust = .5))
+
+g_FGA_sex <- smoking_data_FGA %>% 
+  group_by(SEX) %>% 
+  summarise(FGA = mean(FGA)) %>%
+ggplot(aes(x = SEX, y = FGA, fill = SEX)) +
+  geom_col() +
+  labs(title = "FGA by Sex", xlab = "Sex") +
+  theme(plot.title = element_text(hjust = .5))
+
+g_FGA_smoke <- smoking_data_FGA %>% 
+  group_by(SMOKING_HISTORY) %>% 
+  summarise(FGA = mean(FGA)) %>%
+ggplot(aes(x = SMOKING_HISTORY, y = FGA, fill = SMOKING_HISTORY)) +
+  geom_col() +
+  labs(title = "FGA by Smoking History", xlab = "Smoking History") +
+  theme(plot.title = element_text(hjust = .5))
+
+
+g_TMB_race <- smoking_data_TMB %>% 
+  group_by(RACE) %>% 
+  summarise(TMB = mean(TMB)) %>%
+ggplot(aes(x = RACE, y = TMB, fill = RACE)) +
+  geom_col() +
+  labs(title = "TMB by Race", xlab = "Race") +
+  theme(plot.title = element_text(hjust = .5))
+
+smoking_data_TMB %>% 
+  group_by(SMOKING_HISTORY) %>% 
+  summarise(TMB = mean(TMB)) %>%
+ggplot(aes(x = SMOKING_HISTORY, y = TMB, fill = SMOKING_HISTORY)) +
+  geom_col() +
+  labs(title = "TMB by Smoking History", xlab = "Smoking History") +
+  theme(plot.title = element_text(hjust = .5))
+
+smoking_data_TMB %>% 
+  group_by(SEX) %>% 
+  summarise(TMB = mean(TMB)) %>%
+ggplot(aes(x = SEX, y = TMB, fill = SEX)) +
+  geom_col() +
+  labs(title = "TMB by Sex", xlab = "Sex") +
+  theme(plot.title = element_text(hjust = .5))
+```
+
+
+
+```{r}
+library(gridExtra)
+# REMOVE OUTLIERS: 3 times sd or 1.5 times quartile range... clearly impacting
+race_FGA <- race_data %>%
+  filter(!is.na(FGA)) %>%
+ggplot(aes(x = RACE, y = sqrt(FGA), fill = RACE)) +
+  geom_boxplot() +
+  labs(title = expression(sqrt(FGA) ~ "by Race"), y = expression(sqrt(FGA)), x = "Race") +
+  theme(plot.title = element_text(hjust = .5), axis.text.x = element_blank())
+
+sex_FGA <- sex_data %>%
+  filter(!is.na(FGA)) %>%
+ggplot(aes(x = SEX, y = sqrt(FGA), fill = SEX)) +
+  geom_boxplot() +
+  labs(title = expression(sqrt(FGA) ~ "by Sex"), y = expression(sqrt(FGA)), x = "Sex") +
+  theme(plot.title = element_text(hjust = .5), axis.text.x = element_blank())
+
+smoke_FGA <- smoking_data_FGA %>%
+ggplot(aes(x = SMOKING_HISTORY, y = sqrt(FGA), fill = SMOKING_HISTORY)) +
+  geom_boxplot() +
+  labs(title = expression(sqrt(FGA) ~ "by Smoking History"), fill = "Smoking", y = expression(sqrt(FGA)), x = "Smoking History") +
+  theme(plot.title = element_text(hjust = .5), axis.text.x = element_blank())
+
+BMI_FGA <- BMI_data %>%
+  filter(!is.na(FGA)) %>%
+ggplot(aes(x = BMI_CATEGORIES, y = sqrt(FGA), fill = BMI_CATEGORIES)) +
+  geom_boxplot() +
+  labs(title = expression(sqrt(FGA) ~ "by BMI Category", fill = "BMI"), y = expression(sqrt(FGA)), x = "BMI Category") +
+  theme(plot.title = element_text(hjust = .5), axis.text.x = element_blank())
+
+grid.arrange(race_FGA, sex_FGA, smoke_FGA, BMI_FGA, nrow = 2)
+
+
+race_TMB <- race_data %>%
+  filter(!is.na(TMB)) %>%
+ggplot(aes(x = RACE, y = log2(TMB+1), fill = RACE)) +
+  geom_boxplot() +
+  labs(title = expression(paste(Log[2](TMB+1), " by Race")), y = expression(log[2](TMB+1)), x = "Race") +
+  theme(plot.title = element_text(hjust = .5), axis.text.x = element_blank())
+
+sex_TMB <- sex_data %>%
+  filter(!is.na(TMB)) %>%
+ggplot(aes(x = SEX, y = log2(TMB+1), fill = SEX)) +
+  geom_boxplot() +
+  labs(title = expression(paste(Log[2](TMB+1), " by Sex")), y = expression(log[2](TMB+1)), x = "Sex") +
+  theme(plot.title = element_text(hjust = .5), axis.text.x = element_blank())
+
+smoke_TMB <- smoking_data_TMB %>% 
+ggplot(aes(x = SMOKING_HISTORY, y = log2(TMB+1), fill = SMOKING_HISTORY)) +
+  geom_boxplot() +
+  labs(title = expression(paste(Log[2](TMB+1), " by Smoking History")), fill = "Smoking", y = expression(log[2](TMB+1)), x = "Smoking History") +
+  theme(plot.title = element_text(hjust = .5), axis.text.x = element_blank())
+
+BMI_TMB <- BMI_data %>%
+  filter(!is.na(TMB)) %>%
+ggplot(aes(x = BMI_CATEGORIES, y = log2(TMB+1), fill = BMI_CATEGORIES)) +
+  geom_boxplot() +
+  labs(title = expression(paste(Log[2](TMB+1), " by BMI Category")), fill = "BMI", y = expression(log[2](TMB+1)), x = "BMI Category") +
+  theme(plot.title = element_text(hjust = .5), axis.text.x = element_blank())
+
+grid.arrange(race_TMB, sex_TMB, smoke_TMB, BMI_TMB, nrow = 2)
+```
+
+
+
+## Final tables
+
+```{r}
+table_TMB_SMOKE <- fsmry.dmgrph(dat = smoking_data_TMB, vars = c("TMB"), vars.cat = c(0), by = c("SMOKING_HISTORY"), prop.by.row = F)
+table_TMB_SEX <- fsmry.dmgrph(dat = smoking_data_TMB, vars = c("TMB"), vars.cat = c(0), by = c("SEX"), prop.by.row = F)
+table_TMB_RACE <- fsmry.dmgrph(dat = smoking_data_TMB, vars = c("TMB"), vars.cat = c(0), by = c("RACE"), prop.by.row = F)
+```
+
+
+```{r, echo = FALSE, results = 'asis'}
+kbl(table_TMB_SMOKE[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>TMB By Smoking", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+kbl(table_TMB_SEX[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>TMB By Sex", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+kbl(table_TMB_RACE[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>TMB By Race", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+```
+
+
+```{r}
+table_FGA_SMOKE <- fsmry.dmgrph(dat = smoking_data_FGA, vars = c("FGA"), vars.cat = c(0), by = c("SMOKING_HISTORY"), prop.by.row = F)
+table_FGA_SEX <- fsmry.dmgrph(dat = smoking_data_FGA, vars = c("FGA"), vars.cat = c(0), by = c("SEX"), prop.by.row = F)
+table_FGA_RACE <- fsmry.dmgrph(dat = smoking_data_FGA, vars = c("FGA"), vars.cat = c(0), by = c("RACE"), prop.by.row = F)
+```
+
+
+```{r, echo = FALSE, results = 'asis'}
+kbl(table_FGA_SMOKE[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>FGA By Smoking", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+kbl(table_FGA_SEX[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>FGA By Sex", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+kbl(table_TMB_RACE[[1]], row.names = F, longtable=T,booktabs=T,caption="<center>FGA By Race", align = "l") %>%
+ kable_classic(full_width = F, position = "center", html_font = "Cambria")
+```
+
+## Survival
+```{r}
+surv_FGA <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ FGA, data = smoking_data_FGA)
+summary(surv_FGA)
+
+surv_FGA <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ FGA + RACE, data = smoking_data_FGA)
+summary(surv_FGA)
+
+surv_FGA <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ FGA + SEX, data = smoking_data_FGA)
+summary(surv_FGA)
+
+surv_FGA <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ FGA + SMOKING_HISTORY, data = smoking_data_FGA) #significant
+summary(surv_FGA)
+
+survFGA_fit <- survfit(surv_FGA)
+
+plot(survFGA_fit, main = "Survival Curve", xlab = "Time", ylab = "Survival Probability")
+```
+
+```{r}
+#if we discover we can do tmb
+surv_TMB <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ TMB, data = smoking_data_TMB)
+summary(surv_TMB)
+
+surv_TMB <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ TMB + RACE, data = smoking_data_TMB)
+summary(surv_TMB)
+
+surv_TMB <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ TMB + SEX, data = smoking_data_TMB)
+summary(surv_TMB)
+
+surv_TMB <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ TMB + SMOKING_HISTORY, data = smoking_data_TMB) # SIGNIFICANT
+summary(surv_TMB)
+
+survTMB_fit <- survfit(surv_TMB)
+
+plot(survTMB_fit, main = "Survival Curve", xlab = "Time", ylab = "Survival Probability")
+```
+
+```{r}
+FGA_surv_smoke_data <- smoking_data_FGA %>% mutate(FGA_cat = ifelse(FGA < .058, "Low FGA", ifelse(FGA < .1796, "Low-Med FGA", ifelse(FGA < .3355, "Med-High FGA", "High FGA")))) # based on quartiles
+
+TMB_surv_smoke_data <- smoking_data_TMB %>% mutate(TMB_cat = ifelse(TMB < .04731, "Low TMB", ifelse(TMB < .67807, "Low-Med TMB", ifelse(TMB < 2.44271, "Med-High TMB", "High TMB")))) # based on quartiles
+```
+
+```{r}
+surv_FGAcat <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ FGA_cat, data = FGA_surv_smoke_data) # SIGNIFICANT
+summary(surv_FGAcat)
+
+survFGAcat_fit <- survfit(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ FGA_cat, data = FGA_surv_smoke_data)
+ggsurvplot(survFGAcat_fit, data = FGA_surv_smoke_data, pval = TRUE, pval.method = TRUE, pval.method.coord = c(250, .9), pval.coord = c(250, .8), conf.int = TRUE, legend = "bottom", title = "Cancer Survival Kaplan Meier Curve by FGA Category", xlab = "Time (months)") %++% guides(colour = guide_legend(nrow=1))
+
+
+surv_TMBcat <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ TMB_cat, data = TMB_surv_smoke_data) # SIGNIFICANT
+summary(surv_TMBcat)
+
+survTMBcat_fit <- survfit(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ TMB_cat, data = TMB_surv_smoke_data)
+ggsurvplot(survTMBcat_fit, data = TMB_surv_smoke_data, pval = TRUE, pval.method = TRUE, pval.method.coord = c(250, .9), pval.coord = c(250, .8), conf.int = TRUE, legend = "bottom", title = "Cancer Survival Kaplan Meier Curve by TMB Category", xlab = "Time (months)") %++% guides(colour = guide_legend(nrow=2))
+```
+
+
+
+```{r}
+surv_TMBmodel <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ TMB + SMOKING_HISTORY + AGE + TUMOR_PURITY, data = TMB_surv_smoke_data) # no TMB sig, only age
+summary(surv_TMBmodel)
+
+
+
+surv_TMBmodel <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ AGE, data = TMB_surv_smoke_data) 
+summary(surv_TMBmodel)
+surv_TMBmodel <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ TMB, data = TMB_surv_smoke_data) # to compare individually
+summary(surv_TMBmodel)
+
+surv_TMBmodel <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ TUMOR_PURITY, data = TMB_surv_smoke_data)
+summary(surv_TMBmodel)
+
+
+surv_FGAmodel <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ FGA + SMOKING_HISTORY + AGE + TUMOR_PURITY, data = FGA_surv_smoke_data) # no TMB sig, again only age - looks like age accounts for the variation when added
+summary(surv_FGAmodel)
+
+surv_FGAmodel <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ FGA, data = FGA_surv_smoke_data) 
+summary(surv_FGAmodel)
+surv_FGAmodel <- coxph(Surv(OS_MONTHS, as.numeric(OS_STATUS)) ~ AGE, data = FGA_surv_smoke_data) # again just age more significant
+summary(surv_FGAmodel)
+```
+
+```{r}
+smoke_simple_FGA <- smoking_data_FGA %>% mutate(RACE = ifelse(RACE == "White", "White", "Other"), SMOKING_HISTORY = ifelse(SMOKING_HISTORY == "Never", "Never", "Ever has"))
+
+lung_smoke_FGA <- smoking_data_FGA %>% filter(CANCER_TYPE == "Non-Small Cell Lung Cancer" | CANCER_TYPE == "Small Cell Lung Cancer")
+```
+
+```{r}
+library(lme4)
+smoking_lm <- lmer(FGA ~ SEX + RACE + SMOKING_HISTORY + (1|SITE_OF_TUMOR_TISSUE), 
+           data = smoking_data_FGA)
+summary(smoking_lm)
+
+lung_smoke_lm <- lm(FGA ~ factor(SEX) + SMOKING_HISTORY, 
+           data = lung_smoke_FGA)
+summary(lung_smoke_lm)
+```
+
+
+Study with therapies that only had sex (TMB)
+```{r}
+library(coxme)
+sex_therapy <- read.csv("C:/Amanda's laptop 2023/weill cornell docs/Masters Project Genome Alterations Cancer/TMB and immunotherapy.csv")
+
+sex_therapy_TMB <- sex_therapy %>% filter(!is.na(TMB..nonsynonymous.)) %>% mutate(Overall.Survival.Status = ifelse(Overall.Survival.Status == "0:LIVING", 0, 1), Tumor.Purity = as.numeric(Tumor.Purity), TMB_cat = ifelse(TMB..nonsynonymous. > quantile(TMB..nonsynonymous., .9), "Top 10% TMB", ifelse(TMB..nonsynonymous. > quantile(TMB..nonsynonymous., .8), "Top 10-20% TMB", "Bottom 80% TMB")))
+
+
+surv_TMBmodel <- coxme(Surv(Overall.Survival..Months., as.numeric(Overall.Survival.Status)) ~ TMB..nonsynonymous. + Sex + Drug.Type  + (1|Cancer.Type), data = sex_therapy_TMB) # no TMB sig, only age
+summary(surv_TMBmodel)
+
+surv_TMBmodel <- coxph(Surv(Overall.Survival..Months., as.numeric(Overall.Survival.Status)) ~ TMB..nonsynonymous. + Drug.Type  + Cancer.Type, data = sex_therapy_TMB) # no TMB sig, only age
+summary(surv_TMBmodel)
+
+surv_TMBmodel <- coxph(Surv(Overall.Survival..Months., as.numeric(Overall.Survival.Status)) ~ TMB..nonsynonymous. + Drug.Type  + Sex, data = sex_therapy_TMB) # no TMB sig, only age
+summary(surv_TMBmodel)
+
+surv_TMBmodel <- coxme(Surv(Overall.Survival..Months., as.numeric(Overall.Survival.Status)) ~ TMB..nonsynonymous. + Drug.Type  + Tumor.Purity + Sex + Age.Group.at.Diagnosis.in.Years +  (1|Cancer.Type), data = sex_therapy_TMB) # no TMB sig, only age
+summary(surv_TMBmodel)
+
+surv_TMBmodel <- coxph(Surv(Overall.Survival..Months., as.numeric(Overall.Survival.Status)) ~ TMB_cat + Sex + Drug.Type, data = sex_therapy_TMB) # no TMB sig, only age
+summary(surv_TMBmodel)
+```
+
+
