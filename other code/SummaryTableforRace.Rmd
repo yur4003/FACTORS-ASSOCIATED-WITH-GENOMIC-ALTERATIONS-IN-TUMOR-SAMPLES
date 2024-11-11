@@ -1,0 +1,232 @@
+---
+title: "Summary Table"
+author: "Yuxiang Ren"
+date: "2024-07-28"
+output: html_document
+---
+
+```{r }
+library(dplyr)
+library(tableone)
+library(knitr)
+library(tableone)
+library(readr)
+library(tidyverse)
+library(janitor)
+```
+
+```{r}
+combined_data <- read.csv("~/Desktop/capstone/data/combined_data_race_NA.csv")
+# names(combined_data)
+
+
+variables_string <- c("TMB", "FGA", "mutation_count", "cancer_type", 
+                      "cancer_type_detailed", "number_of_samples_per_patient", 
+                      "sex", "race_category", "oncotree_code", "sample_type")
+
+
+table_combined <- CreateTableOne(
+  data = combined_data %>% select(-c(sample_id, patient_id, study_id)), 
+  vars = variables_string, 
+  factorVars = c("sex", "cancer_type", "cancer_type_detailed", "race_category", 
+                 "oncotree_code", "sample_type"), 
+  addOverall = TRUE
+)
+
+
+kable(
+  print(table_combined, showAllLevels = TRUE), 
+  caption = "Descriptive Analysis of Combined Data"
+)
+```
+
+
+```{r}
+
+
+# function for  summary tables
+generate_summary_table <- function(data, data_name) {
+  # get the varibles from dataset
+  variables <- names(data)
+  
+  # set factor variables , can be adjusted
+  factor_vars <- variables[variables %in% c("sex", "cancer_type", "cancer_type_detailed", 
+                                            "race_category", "oncotree_code", "sample_type")]
+  
+  # maek the summary table
+  table <- CreateTableOne(
+    data = data %>% select(-c(sample_id, patient_id, study_id)), 
+    vars = variables, 
+    factorVars = factor_vars, 
+    addOverall = TRUE
+  )
+  
+  # print out
+  kable(
+    print(table, showAllLevels = TRUE), 
+    caption = paste("Descriptive Analysis of", data_name)
+  )
+}
+```
+
+```{r}
+
+
+clean_column_names <- function(name) {
+  name %>%
+    str_to_lower() %>%
+    str_replace_all(" ", "_")
+}
+
+
+# Cancer Therapy and Clonal Hematopoiesis (MSK, Nat Genet 2020)
+msk_ch_Clinical <- read_tsv("/Users/JasonRen.584/Desktop/capstone/data/Race/msk_ch_2020_clinical_data (1).tsv", name_repair = clean_column_names)
+
+# Cancer Cell Line Encyclopedia (Broad, 2019)
+ccle_2019_clinical <- read_tsv("/Users/JasonRen.584/Desktop/capstone/data/Race/ccle_broad_2019_clinical_data.tsv", name_repair = clean_column_names)
+
+# Colorectal Cancer (MSK, JNCI 2021)
+crc_eo_2020_clinical <- read_tsv("/Users/JasonRen.584/Desktop/capstone/data/Race/crc_eo_2020_clinical_data.tsv", name_repair = clean_column_names)
+
+# Metastatic Breast Cancer (MSK, Cancer Discovery 2022)
+breast_in4_clinical <- read_tsv("/Users/JasonRen.584/Desktop/capstone/data/Race/breast_ink4_msk_2021_clinical_data.tsv", name_repair = clean_column_names)
+
+# Breast Invasive Carcinoma (TCGA, PanCancer Atlas)
+brca_clinical <- read_tsv("/Users/JasonRen.584/Desktop/capstone/data/Race/brca_tcga_pan_can_atlas_2018_clinical_data.tsv", name_repair = clean_column_names)
+
+# Esophagogastric Cancer (MSK, J Natl Cancer Inst 2023)
+egc_msk_clinical_23 <- read_tsv("/Users/JasonRen.584/Desktop/capstone/data/Race/egc_msk_2023_clinical_data.tsv", name_repair = clean_column_names)
+
+# Metastatic Non-Small Cell Lung Cancer (MSK, Nature Medicine 2022)
+nsclc_clinical <- read_tsv("/Users/JasonRen.584/Desktop/capstone/data/Race/nsclc_ctdx_msk_2022_clinical_data.tsv", name_repair = clean_column_names)
+
+# Lung Adenocarcinoma Met Organotropism (MSK, Cancer Cell 2023)
+luad_23_clinical <- read_tsv("/Users/JasonRen.584/Desktop/capstone/data/Race/luad_mskcc_2023_met_organotropism_clinical_data.tsv", name_repair = clean_column_names)
+
+# Prostate Adenocarcinoma (MSK, Clin Cancer Res. 2022)
+prad_pik_clinical <- read_tsv("/Users/JasonRen.584/Desktop/capstone/data/Race/prad_pik3r1_msk_2021_clinical_data.tsv", name_repair = clean_column_names)
+
+# Endometrial Cancer (MSK, Cancer Discovery 2023)
+ucec_23_clinical <- read_tsv("/Users/JasonRen.584/Desktop/capstone/data/Race/ucec_ancestry_cds_msk_2023_clinical_data.tsv", name_repair = clean_column_names)
+
+# Hepatocellular Carcinoma (MSK, 2024)
+hcc_msk_24_clinical <- read_tsv("/Users/JasonRen.584/Desktop/capstone/data/Race/hcc_msk_2024_clinical_data.tsv", name_repair = clean_column_names)
+
+# Sarcoma (MSK, Nat Commun. 2022)
+sarcoma_clinical <- read_tsv("/Users/JasonRen.584/Desktop/capstone/data/Race/sarcoma_mskcc_2022_clinical_data.tsv", name_repair = clean_column_names)
+
+# Race Differences in Prostate Cancer (MSK, 2021)
+prad_msk_clinical <- read_tsv("/Users/JasonRen.584/Desktop/capstone/data/Race/prad_msk_stopsack_2021_clinical_data.tsv", name_repair = clean_column_names)
+
+
+
+
+## rename : TMB and FGA
+library(dplyr)
+
+# Cancer Therapy and Clonal Hematopoiesis (MSK, Nat Genet 2020)
+
+msk_ch_Clinical <- msk_ch_Clinical %>%
+  rename(TMB = `tmb_(nonsynonymous)`)
+
+
+
+# Cancer Cell Line Encyclopedia (Broad, 2019)
+
+ccle_2019_clinical <- ccle_2019_clinical %>%
+  rename(TMB = `tmb_(nonsynonymous)`, FGA = fraction_genome_altered)
+
+
+
+
+# Colorectal Cancer (MSK, JNCI 2021) no TMB
+
+crc_eo_2020_clinical <- crc_eo_2020_clinical %>%
+  rename(FGA = fraction_genome_altered)
+
+
+
+# Metastatic Breast Cancer (MSK, Cancer Discovery 2022) 
+
+breast_in4_clinical <- breast_in4_clinical %>%
+  rename(TMB = `tmb_(nonsynonymous)`, FGA = fraction_genome_altered)
+
+
+# Breast Invasive Carcinoma (TCGA, PanCancer Atlas)
+
+brca_clinical <- brca_clinical %>%
+  rename(TMB = `tmb_(nonsynonymous)`, FGA = fraction_genome_altered)
+
+
+# Esophagogastric Cancer (MSK, J Natl Cancer Inst 2023)
+
+egc_msk_clinical_23 <- egc_msk_clinical_23 %>%
+  rename(TMB = `tmb_(nonsynonymous)`, FGA = fraction_genome_altered)
+
+
+
+
+# Metastatic Non-Small Cell Lung Cancer (MSK, Nature Medicine 2022)
+
+nsclc_clinical <- nsclc_clinical %>%
+  rename(TMB = `tmb_(nonsynonymous)`, FGA = fraction_genome_altered)
+
+
+
+# Lung Adenocarcinoma Met Organotropism (MSK, Cancer Cell 2023)
+
+luad_23_clinical <- luad_23_clinical %>%
+  rename(TMB = `tmb_(nonsynonymous)`, FGA = fraction_genome_altered)
+
+
+# Prostate Adenocarcinoma (MSK, Clin Cancer Res. 2022)
+
+prad_pik_clinical <- prad_pik_clinical %>%
+  rename(TMB = `tmb_(nonsynonymous)`, FGA = fraction_genome_altered)
+
+
+# Endometrial Cancer (MSK, Cancer Discovery 2023)  no FGA
+ucec_23_clinical <- ucec_23_clinical %>%
+  rename(TMB = `tmb_(nonsynonymous)`)
+
+
+# Hepatocellular Carcinoma (MSK, 2024)
+hcc_msk_24_clinical <- hcc_msk_24_clinical %>%
+  rename(TMB = `tmb_(nonsynonymous)`, FGA = fraction_genome_altered,race_category = race)
+
+
+
+# Sarcoma (MSK, Nat Commun. 2022) no TMB
+
+sarcoma_clinical <- sarcoma_clinical %>%
+  rename( FGA = fraction_genome_altered)
+
+
+
+# Race Differences in Prostate Cancer (MSK, 2021)
+
+prad_msk_clinical <- prad_msk_clinical %>%
+  rename(TMB = `tmb_(nonsynonymous)`, FGA = fraction_genome_altered)
+
+# datasets for RACE
+datasets <- list(
+  msk_ch_Clinical = msk_ch_Clinical,
+  ccle_2019_clinical = ccle_2019_clinical,
+  crc_eo_2020_clinical = crc_eo_2020_clinical,
+  breast_in4_clinical = breast_in4_clinical,
+  brca_clinical = brca_clinical,
+  egc_msk_clinical_23 = egc_msk_clinical_23,
+  nsclc_clinical = nsclc_clinical,
+  luad_23_clinical = luad_23_clinical,
+  prad_pik_clinical = prad_pik_clinical,
+  ucec_23_clinical = ucec_23_clinical,
+  hcc_msk_24_clinical = hcc_msk_24_clinical,
+  sarcoma_clinical = sarcoma_clinical,
+  prad_msk_clinical = prad_msk_clinical
+)
+
+for (dataset_name in names(datasets)) {
+  data <- datasets[[dataset_name]]
+  generate_summary_table(data, dataset_name)
+}
+```

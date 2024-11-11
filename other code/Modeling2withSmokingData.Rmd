@@ -1,0 +1,1029 @@
+---
+title: "Modeling with Smoking data"
+author: "Yuxiang Ren"
+date: "2024-09-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# Load the packages
+library(lme4)
+library(lmerTest)
+library(ggplot2)
+library(broom.mixed)
+library(performance)
+library(MuMIn)
+library(car)
+library(FactoMineR) # Lib for PCA
+library(MASS) # for Stepwise Regression
+library(lmerTest)
+library(sjPlot)
+
+library(readr)
+library(readxl)
+library(dplyr)
+library(tidyverse)
+library(janitor)
+
+# this for multiple imputation
+library(mice)
+
+library(broom)
+library(sjstats)
+
+# install.packages("effects")
+library(effects)
+library(mitml) # for apply model in all multi-imputation data set and integrate  results
+```
+
+# Load datasets
+```{r}
+Full_smoking <- read.csv("/Users/JasonRen.584/Desktop/capstone/amd/08:28/Full_smoking.csv")
+# data  =  datasets input for modeling
+data <- Full_smoking
+head(data)
+```
+
+
+```{r}
+# # pre-check the data types of all the variables
+str(data)
+# check missing values
+missing_values <- colSums(is.na(data))
+print(missing_values)
+```
+
+# Missing Value Transformation
+```{r}
+## Impute missing categorical data  ->  unknown
+
+# we don't impute response variables
+data <- data %>%
+  filter(!is.na(TMB)) %>%
+  filter(!is.na(FGA))
+
+categorical_na <-  c("OS_STATUS","CANCER_TYPE","METASTATIC","SITE_OF_TUMOR_TISSUE")
+
+# transform missing categorical data
+data <- data %>%
+  mutate(across(all_of(categorical_na), ~ replace_na(as.character(.), "unknown"))) %>%
+  mutate(across(all_of(categorical_na), as.factor))
+head(data)
+```
+
+
+```{r}
+
+# # impute missing numeric data
+
+# data <- data %>%
+#   mutate(across(all_of(numeric_na), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .)))
+
+# numeric_na <- c("AGE", "OS_MONTHS", "TUMOR_PURITY")
+
+#### separated code script and notes: MissingImputationScripe.Rmd file #############
+
+imputed_data <- mice(data, m = 5, method = 'pmm', maxit = 50, seed = 500)
+
+summary(imputed_data)
+plot(imputed_data)
+
+completed_data_1 <- complete(imputed_data, 1)
+head(completed_data_1)
+```
+
+```{r}
+# 提取所有插补数据集，并转换为长格式
+imputed_long <- complete(imputed_data, action = "long", include = TRUE) ## 包含所有插补sets的总dataset
+
+# 将字符变量转换为因子
+imputed_long <- imputed_long %>%
+  mutate(across(where(is.character), as.factor))
+
+# 将处理后的长格式数据重新转换为 mids 对象
+new_imputed_data <- mice::as.mids(imputed_long)
+
+# 将 mids 对象转换为 mitml.list
+imputed_list <- mids2mitml.list(new_imputed_data)
+```
+
+```{r}
+
+# # post- check missing value
+# # factorize the categorical variables (character -> factor)
+cleaned_data <- completed_data_1 %>%
+  mutate(across(where(is.character), as.factor))
+# 
+# head(cleaned_data)
+# # check wheather all catagorical variables have been factorized
+# str(cleaned_data)
+# # check missing values again
+# missing_values <- colSums(is.na(cleaned_data))
+# print(missing_values)
+```
+
+# Variables Selection for Modeling
+## Univariate Analysis
+### Correlation Test for Continuous Variables
+```{r}
+
+# # check correlation b/t each interested variables(CONTINUOUS) and TMB/FGA
+# numeric_vars <- cleaned_data[, sapply(cleaned_data, is.numeric)]
+# # colnames(numeric_vars)
+# 
+# cor_test <- sapply(numeric_vars, function(x) cor(numeric_vars$TMB, x, use = "complete.obs", method = "pearson")) #  use = "complete.obs": omit NA
+# print("Correlation with TMB")
+# print(cor_test)
+# 
+# print("Correlation with FGA")
+# cor_test <- sapply(numeric_vars, function(x) cor(numeric_vars$FGA, x, use = "complete.obs", method = "pearson")) #  use = "complete.obs": omit NA
+# print(cor_test)
+
+```
+
+### ANOVA Test for Categorical Variables
+```{r}
+# # str(cleaned_data)
+# categorical_vars <- cleaned_data[,sapply(cleaned_data, is.factor)]
+# 
+# # 对 categorical_Data 中的所有分类变量进行 ANOVA
+# # 假设 TMB 是因变量，其他变量为分类变量
+# 
+# # 提取分类变量的名称
+# categorical_vars_names <- colnames(categorical_vars)
+# 
+# categorical_vars$TMB <- cleaned_data$TMB
+# categorical_vars$FGA <- cleaned_data$FGA
+# 
+# # 使用 lapply 对每个分类变量进行 ANOVA
+# anova_results <- lapply(categorical_vars_names, function(var) {
+#   formula <- as.formula(paste("TMB ~", var))
+#   anova_result <- aov(formula, data = categorical_vars)
+#   return(summary(anova_result))
+# })
+# 
+# # 打印结果
+# names(anova_results) <- categorical_vars_names
+# anova_results
+```
+
+
+## Multicollinearity Check
+```{r}
+# Measure：VIF value
+linear_model_TMB <- lm(TMB ~ AGE + SEX + RACE  + TUMOR_PURITY+OS_STATUS+METASTATIC+CANCER_TYPE +SMOKING_HISTORY, data = cleaned_data)
+vif_values_TMB <- vif(linear_model_TMB)
+print(vif_values_TMB)
+# drop Metastatic due to multicolinear with cancer types
+```
+
+## Visualization
+```{r}
+# Just a framework############## 
+# scatter plot
+ggplot(cleaned_data, aes(x = AGE, y = sqrt(FGA))) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  theme_minimal()
+
+# box plot
+ggplot(cleaned_data, aes(x = factor(CANCER_TYPE), y = log2(TMB+1))) +
+  geom_boxplot() +
+  theme_minimal()
+
+ggplot(cleaned_data, aes(x = factor(RACE), y = log2(TMB+1))) +
+  geom_boxplot() +
+  theme_minimal()
+```
+
+
+
+```{r}
+hist(sqrt(cleaned_data$FGA), probability = TRUE, main = "Histogram with Normal Curve For sqrt FGA")
+qqnorm(sqrt(cleaned_data$FGA))
+qqline(sqrt(cleaned_data$FGA), col = "red")
+
+hist(log2(cleaned_data$TMB+1), probability = TRUE, main = "Histogram with Normal Curve For transformed TMB")
+qqnorm(log2(cleaned_data$TMB+1))
+qqline(log2(cleaned_data$TMB+1), col = "red")
+
+```
+# Modeling
+## Build Mixed-effect Regression Model
+```{r}
+# Study vs CANCER_TYPE vs PATTENT_ID：Crossed 候选***********
+mixed_model_crossed <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1|CANCER_TYPE) , data = cleaned_data)
+
+# 假设imputed_data是包含多个插补数据集的对象
+# 使用with函数来对插补数据集进行模型拟合
+
+fit <- with(imputed_list, lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1|CANCER_TYPE)))
+pooled_results_TMB_x <- testEstimates(fit)
+summary(pooled_results_TMB_x)
+
+
+mixed_model_crossed_slope <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1 + SMOKING_HISTORY|CANCER_TYPE) , data = cleaned_data)
+summary(mixed_model_crossed_slope)
+smoking_history_cancertype_TMB <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+ (1 + SMOKING_HISTORY|CANCER_TYPE) , data = cleaned_data)
+summary(smoking_history_cancertype_TMB)
+
+fit_cs <- with(imputed_list, lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) +(1 + SMOKING_HISTORY|CANCER_TYPE)))
+pooled_results_cancer_smoke <- testEstimates(fit_cs)
+summary(pooled_results_cancer_smoke)
+
+
+# vif(mixed_model_crossed)
+# Patient ID and CANCER_TYPE nested in Study
+# mixed_model_nested <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY + (1|Study) + (1 | Study:PATIENT_ID ) +(1 | Study:CANCER_TYPE ), data = cleaned_data)
+
+# Patient ID nested in Study but Cancer Type crossed with Study
+mixed_model_nested2 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY  + (1|Study) + (1 | Study:PATIENT_ID ) +(1 | CANCER_TYPE ) , data = cleaned_data)
+
+# # Patient ID and CANCER_TYPE nested in Study but not Study alone
+# mixed_model_nested3 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY + (1 | Study:PATIENT_ID ) +(1 | Study:CANCER_TYPE ), data = cleaned_data)
+# # # Patient ID nested in Study but Cancer Type crossed with Study
+# mixed_model_4 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY + Study*CANCER_TYPE + (1|Study) + (1 | Study:PATIENT_ID ) +(1 | CANCER_TYPE ) , data = cleaned_data)
+
+# Cancer Type nested in Study，Patient_ID Alone 候选***************
+mixed_model_nested5 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY  + (1|Study) + (1 | PATIENT_ID ) +(1 | Study:CANCER_TYPE ) , data = cleaned_data)
+# remove Study from nested5 due to singular Study 候选*****************
+mixed_model_nested5_1 <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY  +  (1 | PATIENT_ID ) + (1 | Study:CANCER_TYPE ) , data = cleaned_data)
+
+fit <- with(imputed_list, lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY + (1 | PATIENT_ID ) + (1 | Study:CANCER_TYPE ) ))
+pooled_results_TMB_int <- testEstimates(fit)
+summary(pooled_results_TMB_int)
+
+# only interaction no independant random effect
+mixed_model_interaction <- lmerTest::lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+SMOKING_HISTORY  +  (1 | Study:PATIENT_ID ) +(1 | Study:CANCER_TYPE ) , data = cleaned_data)
+
+### sink("TMB_summary.txt")
+
+summary(mixed_model_crossed)  ## fitness更高， residual variance 更小
+AIC(mixed_model_crossed)
+BIC(mixed_model_crossed)
+performance::r2(mixed_model_crossed)
+
+# random_effects <- ranef(mixed_model_crossed)$Study
+# random_effects_df <- as.data.frame(random_effects)
+# random_effects_df$Study <- rownames(random_effects)
+# # colnames(random_effects_df) <- c("Intercept",  "CANCER_TYPE")
+# 
+# # 将数据整理为长格式（为了绘制 Male 和 Female 的效果）
+# random_effects_long <- reshape2::melt(random_effects_df, id.vars = "Study", variable.name = "AGE", value.name = "Effect")
+# 
+# # 绘图
+# ggplot(random_effects_long, aes(x = Study, y = Effect, color = Age)) +
+#   geom_point() +
+#   geom_errorbar(aes(ymin = Effect - 0.1, ymax = Effect + 0.1), width = 0.2) + # 假设误差条为 +/- 0.1，可根据具体情况调整
+#   facet_wrap(~ Study) +
+#   theme_minimal() +
+#   labs(
+#     title = "Random Slopes of SEX across Study",
+#     x = "Study",
+#     y = "SEX Effect Coefficient"
+#   ) +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+# summary(mixed_model_nested)
+
+
+summary(mixed_model_nested2) ## 对于嵌套关系有着更好的捕捉
+AIC(mixed_model_nested2)
+BIC(mixed_model_nested2)
+performance::r2(mixed_model_nested2)
+# summary(mixed_model_nested3)
+# summary(mixed_model_4)
+summary(mixed_model_nested5)## fitness更高， residual variance 更小,且捕捉了嵌套，但是study var小(isSingular)
+AIC(mixed_model_nested5)
+BIC(mixed_model_nested5)
+performance::r2(mixed_model_nested5)
+
+summary(mixed_model_nested5_1) ## remove Study focus on interection
+AIC(mixed_model_nested5_1)
+BIC(mixed_model_nested5_1)
+performance::r2(mixed_model_nested5_1)
+
+summary(mixed_model_interaction)
+
+
+### sink()
+# confint(mixed_model)
+# 
+# ranef(mixed_model)
+```
+
+
+```{r}
+## FIxed effect
+# Forest Plot to visual
+fixed_effects <- broom::tidy(mixed_model_crossed, effects = "fixed", conf.int = TRUE)# 绘制 Forest Plot
+ggplot(fixed_effects, aes(x = estimate, y = term)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  theme_minimal() +
+  labs(title = "Forest Plot of Fixed Effects on TMB", x = "Estimate", y = "Predictor")
+
+# Forest Plot to visual
+fixed_effects <- broom::tidy(mixed_model_FGA_x, effects = "fixed", conf.int = TRUE)# 绘制 Forest Plot
+ggplot(fixed_effects, aes(x = estimate, y = term)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  theme_minimal() +
+  labs(title = "Forest Plot of Fixed Effects on FGA", x = "Estimate", y = "Predictor")
+```
+```{r}
+# 所有插补集的fixed effect 的可视化
+# 从 pooled_results 中提取固定效应估计
+estimates <- pooled_results_TMB_x$estimates
+
+forest_data <- data.frame(
+  term = rownames(estimates),
+  estimate = estimates[, "Estimate"],
+  std.error = estimates[, "Std.Error"],
+  conf.low = estimates[, "Estimate"] - 1.96 * estimates[, "Std.Error"],
+  conf.high = estimates[, "Estimate"] + 1.96 * estimates[, "Std.Error"]
+)
+
+
+ggplot(forest_data, aes(x = estimate, y = term)) +
+  geom_point(size = 3) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  theme_minimal() +
+  labs(title = "Forest Plot of Fixed Effects on TMB", x = "Estimate", y = "Predictor") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red")
+
+
+estimates <- pooled_results_FGA_x$estimates
+
+forest_data <- data.frame(
+  term = rownames(estimates),
+  estimate = estimates[, "Estimate"],
+  std.error = estimates[, "Std.Error"],
+  conf.low = estimates[, "Estimate"] - 1.96 * estimates[, "Std.Error"],
+  conf.high = estimates[, "Estimate"] + 1.96 * estimates[, "Std.Error"]
+)
+
+
+ggplot(forest_data, aes(x = estimate, y = term)) +
+  geom_point(size = 3) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  theme_minimal() +
+  labs(title = "Forest Plot of Fixed Effects on FGA", x = "Estimate", y = "Predictor") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "blue")
+
+```
+```{r}
+
+# 绘制 AGE 的效应
+ggplot(forest_data[forest_data$term == "AGE", ], aes(x = term, y = estimate)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.1) +
+  labs(title = "Effect of AGE on log2(TMB+1)",
+       x = "AGE", y = "Estimate") +
+  theme_minimal()
+
+# 绘制 TUMOR_PURITY 的效应
+ggplot(forest_data[forest_data$term == "TUMOR_PURITY", ], aes(x = term, y = estimate)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.1) +
+  labs(title = "Effect of TUMOR_PURITY on log2(TMB+1)",
+       x = "TUMOR_PURITY", y = "Estimate") +
+  theme_minimal()
+
+```
+```{r}
+# 在每个数据集上创建一个标识符列
+for (i in 1:5) {
+  assign(paste0("cleaned_data_", i, "_with_predictions"), 
+         cbind(get(paste0("cleaned_data_", i)), 
+               predicted_age = predicted_age_list[[i]], 
+               predicted_purity = predicted_purity_list[[i]], 
+               model_id = paste0("Model_", i)))  # 添加标识符列
+}
+
+# 合并所有数据集
+combined_cleaned_data <- do.call(rbind, 
+                                 lapply(1:5, function(i) get(paste0("cleaned_data_", i, "_with_predictions"))))
+
+# 绘制基于AGE的回归线
+ggplot(combined_cleaned_data, aes(x = AGE, y = log2(TMB + 1), group = model_id)) +
+  geom_point(alpha = 0.3) +  # 原始数据散点图
+  geom_line(aes(y = predicted_age), color = "blue", size = 1) +  # 平均效应回归线
+  labs(title = "Average Mixed Effect Model: Effect of AGE on log2(TMB + 1)",
+       x = "AGE",
+       y = "log2(TMB + 1)") +
+  theme_minimal()
+
+# 绘制基于TUMOR_PURITY的回归线
+ggplot(combined_cleaned_data, aes(x = TUMOR_PURITY, y = log2(TMB + 1), group = model_id)) +
+  geom_point(alpha = 0.3) +  # 原始数据散点图
+  geom_line(aes(y = predicted_purity), color = "blue", size = 1) +  # 平均效应回归线
+  labs(title = "Average Mixed Effect Model: Effect of Tumor Purity on log2(TMB + 1)",
+       x = "Tumor Purity",
+       y = "log2(TMB + 1)") +
+  theme_minimal()
+
+
+```
+
+```{r}
+# 提取随机效应
+# 提取随机效应
+random_effects <- ranef(mixed_model_crossed)
+
+# 提取 PatientID, Cancer_Type, Study 的随机效应
+patient_id_effects <- random_effects$PATIENT_ID
+cancer_type_effects <- random_effects$CANCER_TYPE
+study_effects <- random_effects$Study
+
+# 将随机效应转换为数据框
+patient_id_df <- data.frame(PatientID = rownames(patient_id_effects), Effect = patient_id_effects$`(Intercept)`)
+cancer_type_df <- data.frame(CancerType = rownames(cancer_type_effects), Effect = cancer_type_effects$`(Intercept)`)
+study_df <- data.frame(Study = rownames(study_effects), Effect = study_effects$`(Intercept)`)
+
+
+# 分别可视化 PatientID, Cancer_Type 和 Study 的随机效应
+library(ggplot2)
+
+# 可视化 PatientID 随机效应
+ggplot(patient_id_df, aes(x =PatientID, y = Effect)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Random Effects for Patient ID",
+       x = "Patient ID", y = "Random Effect Estimate")
+
+# 可视化 Cancer_Type 随机效应
+ggplot(cancer_type_df, aes(x = CancerType, y = Effect)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Random Effects for Cancer Type on TMB",
+       x = "Cancer Type", y = "Random Effect Estimate")+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# 可视化 Study 随机效应
+ggplot(study_df, aes(x = Study, y = Effect)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Random Effects for Study",
+       x = "Study", y = "Random Effect Estimate")+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+```{r}
+# 提取随机效应
+# 提取随机效应
+random_effects <- ranef(mixed_model_FGA_x)
+
+# 提取 PatientID, Cancer_Type, Study 的随机效应
+patient_id_effects <- random_effects$PATIENT_ID
+cancer_type_effects <- random_effects$CANCER_TYPE
+study_effects <- random_effects$Study
+
+# 将随机效应转换为数据框
+patient_id_df <- data.frame(PatientID = rownames(patient_id_effects), Effect = patient_id_effects$`(Intercept)`)
+cancer_type_df <- data.frame(CancerType = rownames(cancer_type_effects), Effect = cancer_type_effects$`(Intercept)`)
+study_df <- data.frame(Study = rownames(study_effects), Effect = study_effects$`(Intercept)`)
+
+
+# 分别可视化 PatientID, Cancer_Type 和 Study 的随机效应
+# library(ggplot2)
+
+# 可视化 PatientID 随机效应
+ggplot(patient_id_df, aes(x =PatientID, y = Effect)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Random Effects for Patient ID",
+       x = "Patient ID", y = "Random Effect Estimate")
+
+# 可视化 Cancer_Type 随机效应
+ggplot(cancer_type_df, aes(x = CancerType, y = Effect)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Random Effects for Cancer Type on FGA",
+       x = "Cancer Type", y = "Random Effect Estimate") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# 可视化 Study 随机效应
+ggplot(study_df, aes(x = Study, y = Effect)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Random Effects for Study",
+       x = "Study", y = "Random Effect Estimate")
+
+```
+
+```{r}
+# ## Heat Map
+# # 提取随机效应
+# 
+# ranef_effects <- ranef(mixed_model_crossed)
+# 
+# # 查看随机效应结构
+# str(ranef_effects)
+# 
+# # 将 Cancer_Type 的随机效应转化为数据框
+# random_effects_df <- as.data.frame(ranef_effects$CANCER_TYPE)
+# 
+# # 创建一个新列用来保存 Cancer Type 的名称（因为原来是行名）
+# random_effects_df$cancer_type <- rownames(random_effects_df)
+# 
+# # 查看数据框的结构，确认列名
+# head(random_effects_df)
+# 
+# # 确认 Intercept 和斜率项的列名
+# # 使用列名替换 term 和 condval，假设 Intercept 列名是 "(Intercept)"
+# ggplot(random_effects_df, aes(x = cancer_type, y = rownames(random_effects_df), fill = `(Intercept)`)) +
+#   geom_tile() +
+#   scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+#   theme_minimal() +
+#   labs(title = "Heatmap of Random Effects by Cancer Type", 
+#        x = "Cancer Type", 
+#        y = "Random Effects", 
+#        fill = "Effect Size") +
+#   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+```{r}
+# 提取随机效应
+ranef_effects <- ranef(mixed_model_crossed_slope)
+
+# 将 Cancer Type 的随机效应转换为数据框，选择相关的随机效应项
+random_effects_df <- as.data.frame(ranef_effects$CANCER_TYPE)
+
+# 给 random_effects_df 添加 Cancer Type 的名称
+random_effects_df$cancer_type <- rownames(random_effects_df)
+
+# 如果你有多个随机效应，比如 SMOKING_HISTORYFormer, SMOKING_HISTORYNever，选择这些列
+random_effects_df <- random_effects_df %>%
+  select(cancer_type, `(Intercept)`, SMOKING_HISTORYFormer, SMOKING_HISTORYNever)
+
+# 重塑数据框以便于绘图（将长表格转换为宽表格）
+random_effects_long <- pivot_longer(random_effects_df, cols = -cancer_type, names_to = "Smoking_History", values_to = "Effect_Size")
+
+# 绘制 heatmap
+ggplot(random_effects_long, aes(x = cancer_type, y = Smoking_History, fill = Effect_Size)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  theme_minimal() +
+  labs(title = "Heatmap of Random Effects by Cancer Type and Smoking History", 
+       x = "Cancer Type", 
+       y = "Smoking History", 
+       fill = "Effect Size") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+# VIsualiaztion for smoking history in different cancer type
+# 提取模型中的随机效应
+random_effects <- ranef(mixed_model_crossed_slope)$CANCER_TYPE
+
+# 提取 Smoking_History 相关的两个 levels 的随机斜率
+smoking_slope <- as.data.frame(random_effects)[, c("SMOKING_HISTORYFormer", "SMOKING_HISTORYNever")]
+
+# 添加 Cancer_Type 列，方便绘图
+smoking_slope$CANCER_TYPE <- rownames(random_effects)
+
+# 检查数据框
+print(smoking_slope)
+
+# 加载 tidyr 包以便转换数据框至长格式
+library(tidyr)
+
+# 转换为长格式
+smoking_slope_long <- gather(smoking_slope, key = "SMOKING_HISTORY", value = "Slope", -CANCER_TYPE)
+
+# 检查转换后的数据
+print(smoking_slope_long)
+
+# library(ggplot2)
+
+# 绘制不同 Cancer_Type 中 Smoking_History 两个 levels 的随机效应
+ggplot(smoking_slope_long, aes(x = CANCER_TYPE, y = Slope, fill = SMOKING_HISTORY)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Cancer Type", y = "Smoking History Coefficient (Slope)", 
+       title = "Random Slopes of Smoking History (Former vs Never) across Cancer Types") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+这个图展示了不同 Cancer Types 中，Smoking History（吸烟史） 对应变量（TMB，Tumor Mutation Burden）的 随机斜率系数（Slope）如何变化。图中的柱形图分别表示了两个吸烟史水平（Former 和 Never）对各癌症类型的影响。具体解读如下：
+
+1. 横轴：
+
+	•	表示不同的 Cancer Types（癌症类型）。这些癌症类型从图中可以看到，如 Anal Cancer, Breast Cancer, Lung Cancer, Prostate Cancer 等等。
+
+2. 纵轴：
+
+	•	表示 Smoking History Coefficient（斜率系数），即在不同的癌症类型中，吸烟史（Former 和 Never）对 TMB 的影响强度。值越高，表示吸烟史与 TMB 的正相关性越强；值为负，表示负相关性。
+
+3. 颜色：
+
+	•	红色 柱子表示 SMOKING_HISTORYFormer （曾经吸烟者）的影响系数。
+	•	蓝色 柱子表示 SMOKING_HISTORYNever（从不吸烟者）的影响系数。
+
+4. 解读：
+
+	•	不同癌症类型中，吸烟史的影响不同：在某些癌症类型中，比如 Mesothelioma 和 Non-Small Cell Lung Cancer，Former 和 Never 的系数都有显著差异，表明这些癌症类型中吸烟史对 TMB 的影响存在较大变异。
+	•	斜率系数的正负变化：可以看到，有些癌症类型中吸烟史与 TMB 的关系是正的（即 TMB 随着吸烟史增加），而在一些癌症类型中，系数为负值，说明吸烟史与 TMB 呈负相关关系。
+	•	某些癌症类型中差异显著：比如 Small Cell Lung Cancer 中，Former 和 Never 对 TMB 的影响差异较大（蓝色柱子明显大于红色柱子），这说明吸烟史对于这种癌症类型的影响在组间差异很明显。
+
+5. 趋势与解释：
+
+	•	变异较大的癌症类型：如 Anal Cancer, Non-Small Cell Lung Cancer, Pancreatic Cancer，这些癌症类型中吸烟史的斜率差异较大，说明 Cancer Type 是 SMOKING_HISTORY 影响 TMB 的重要调节因子。
+	•	影响较小的癌症类型：在一些癌症类型中，如 Penile Cancer, Thyroid Cancer, 斜率接近零，说明在这些癌症类型中吸烟史对 TMB 的影响可能不显著。
+
+6. 统计学意义：
+
+	•	这个可视化有助于理解吸烟史对不同癌症类型中 TMB 影响的异质性（heterogeneity）。通过比较不同癌症类型中的 SMOKING_HISTORYFormer 和 SMOKING_HISTORYNever 的斜率系数，可以帮助确定哪些癌症类型的 TMB 更易受到吸烟史的影响。
+
+总结：
+
+	•	图表表明，吸烟史（Former 和 Never）对 TMB 的影响在不同癌症类型中差异显著，某些癌症类型中吸烟史的影响较为显著，而某些癌症类型中差异不大或影响不显著。
+
+```{r}
+# # 提取每个插补数据集的随机效应并合并
+# ranef_list <- lapply(fit_cs$analyses, function(mod) {
+#   ranef(mod)$CANCER_TYPE
+# })
+# 
+# # 将多个插补数据集的随机效应合并
+# ranef_combined <- Reduce("+", ranef_list) / length(ranef_list)  # 取平均
+# 
+# # 将合并后的随机效应转换为数据框
+# ranef_df <- as.data.frame(ranef_combined)
+# ranef_df$CancerType <- rownames(ranef_combined)
+# 
+# # 重塑数据用于 ggplot
+# ranef_df_long <- reshape2::melt(ranef_df, id.vars = "CANCER_TYPE", variable.name = "SMOKING_HISTORY ", value.name = "Slope")
+# 
+# library(ggplot2)
+# 
+# # 绘制图表
+# ggplot(ranef_df_long, aes(x = CancerType, y = Slope, fill = Smoking_History)) +
+#   geom_bar(stat = "identity", position = "dodge") +
+#   scale_fill_manual(values = c("Former" = "red", "Never" = "blue")) +
+#   theme_minimal() +
+#   labs(
+#     title = "Random Slopes of Smoking History (Former vs Never) across Cancer Types",
+#     x = "Cancer Type", 
+#     y = "Slope (Smoking History Effect)",
+#     fill = "SMOKING_HISTORY"
+#   ) +
+#   theme(axis.text.x = element_text(angle = 45, hjust = 1))  # 调整x轴标签
+# 
+# 
+# # Initialize a list to store random effects
+# ranef_list <- lapply(fit_cs$analyses, ranef)
+# 
+# # Combine the random effects across the imputations
+# ranef_combined <- do.call(rbind, ranef_list)
+# 
+# # Check the structure
+# head(ranef_combined)
+# 
+# # Reshape for plotting (you'll need the reshape2 or tidyr package)
+# library(reshape2)
+# 
+# # For example, assuming you want to plot Smoking_History effects by CancerType
+# ranef_long <- melt(ranef_combined, id.vars = "CANCER_TYPE", variable.name = "Smoking_History", value.name = "Slope")
+# 
+# # Now you can plot using ggplot2
+# library(ggplot2)
+# 
+# ggplot(ranef_long, aes(x = CANCER_TYPE, y = Slope, fill = Smoking_History)) +
+#   geom_bar(stat = "identity", position = "dodge") +
+#   theme_minimal() +
+#   labs(title = "Random Effects of Smoking History by Cancer Type",
+#        x = "Cancer Type", y = "Slope
+```
+
+### Fitness
+```{r}
+# AIC BIC
+AIC(mixed_model_crossed)
+BIC(mixed_model_crossed)
+
+#  R-squre
+performance::r2(mixed_model_crossed)
+
+# AIC BIC
+AIC(mixed_model_nested2)
+BIC(mixed_model_nested2)
+
+#  R-squre
+performance::r2(mixed_model_nested2)
+
+# AIC BIC
+AIC(mixed_model_nested5)
+BIC(mixed_model_nested5)
+
+#  R-squre
+performance::r2(mixed_model_nested5)
+
+# AIC BIC
+AIC(mixed_model_nested5_1)
+BIC(mixed_model_nested5_1)
+
+#  R-squre
+performance::r2(mixed_model_nested5_1)
+
+# AIC BIC
+AIC(mixed_model_interaction)
+BIC(mixed_model_interaction)
+
+#  R-squre
+performance::r2(mixed_model_interaction)
+
+
+
+```
+
+
+```{r}
+# # Alternatively, the mixed model with nested random effect
+# mixed_model_nested111 <- lmer(log2(TMB+1) ~ AGE + SEX + RACE  + TUMOR_PURITY+OS_STATUS+CANCER_TYPE +SMOKING_HISTORY  + (1 | Study) + (1 | Study:PATIENT_ID), data = cleaned_data)
+# summary(mixed_model_nested111)
+# 
+# # confint(mixed_model_nested)
+# # 
+# # ranef(mixed_model_nested)
+```
+
+```{r}
+# Alternatively, the mixed model with interactino random effect
+# mixed_model_nested_FGA <- lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY+OS_STATUS+CANCER_TYPE +SMOKING_HISTORY  + (1 | Study) + (1 | Study:PATIENT_ID), data = cleaned_data)
+# summary(mixed_model_nested_FGA)
+
+# confint(mixed_model_nested_FGA)
+# 
+# ranef(mixed_model_nested_FGA)
+```
+
+```{r}
+## Modeling for FGA
+#### sink("FGA_summary")
+# crossed random effect 候选****************8
+mixed_model_FGA_x <- lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) + (1|CANCER_TYPE) , data = cleaned_data)
+summary(mixed_model_FGA_x)
+AIC(mixed_model_FGA_x)
+BIC(mixed_model_FGA_x)
+performance::r2(mixed_model_FGA_x)
+
+fit <- with(imputed_list, lmerTest::lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study) + (1|CANCER_TYPE) ))
+pooled_results_FGA_x <- testEstimates(fit)
+summary(pooled_results_FGA_x)
+
+
+
+# Patient and cancer type nested in Study
+mixed_model_FGA_nALL <- lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY + (1 | Study:PATIENT_ID ) +(1 | Study) +(1|Study:CANCER_TYPE) , data = cleaned_data)
+summary(mixed_model_FGA_nALL)
+AIC(mixed_model_FGA_nALL)
+BIC(mixed_model_FGA_nALL)
+performance::r2(mixed_model_FGA_nALL)
+
+# Patient nested in Study, Cancer type crossed with Study
+mixed_model_FGA_n2 <- lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY + (1 | Study) + (1 | Study:PATIENT_ID )  +(1|CANCER_TYPE) , data = cleaned_data)
+summary(mixed_model_FGA_n2)
+AIC(mixed_model_FGA_n2)
+BIC(mixed_model_FGA_n2)
+performance::r2(mixed_model_FGA_n2)
+
+# PatientID : Study, CancerType crossed 
+mixed_model_FGA_n2_2 <- lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY + (1 |Study: PATIENT_ID )  +(1|CANCER_TYPE) , data = cleaned_data)
+summary(mixed_model_FGA_n2_2)
+AIC(mixed_model_FGA_n2_2)
+BIC(mixed_model_FGA_n2_2)
+performance::r2(mixed_model_FGA_n2_2)
+
+# cancer : Study, PatientID crossed 候选***************
+mixed_model_FGA_n3 <- lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY + (1 | PATIENT_ID ) + (1 | Study) +(1|Study:CANCER_TYPE) , data = cleaned_data)
+summary(mixed_model_FGA_n3)
+AIC(mixed_model_FGA_n3)
+BIC(mixed_model_FGA_n3)
+performance::r2(mixed_model_FGA_n3)
+
+fit <- with(imputed_list, lmerTest::lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY + (1 | PATIENT_ID ) + (1 | Study) +(1|Study:CANCER_TYPE) ))
+pooled_results_FGA_n3 <- testEstimates(fit)
+summary(pooled_results_FGA_n3)
+
+
+# Cancer Type nested in Study, PatientID crossed with Study, no Study
+mixed_model_FGA_n3_2 <- lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY + (1 | PATIENT_ID )  +(1|Study:CANCER_TYPE) , data = cleaned_data)
+summary(mixed_model_FGA_n3_2)
+AIC(mixed_model_FGA_n3_2)
+BIC(mixed_model_FGA_n3_2)
+performance::r2(mixed_model_FGA_n3_2)
+
+### sink()
+
+# patientID:Study, Study:CancerType 
+mixed_model_FGA_int <- lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY + SMOKING_HISTORY + (1 |Study: PATIENT_ID )  +(1|Study:CANCER_TYPE) , data = cleaned_data)
+summary(mixed_model_FGA_int)
+
+# confint(mixed_model_FGA)
+# 
+# ranef(mixed_model_FGA)
+```
+```{r}
+## FItness for FGA
+# AIC BIC
+AIC(mixed_model_FGA_x)
+BIC(mixed_model_FGA_x)
+
+#  R-squre
+performance::r2(mixed_model_FGA_x)
+
+
+# AIC BIC
+AIC(mixed_model_FGA_nALL)
+BIC(mixed_model_FGA_nALL)
+
+#  R-squre
+performance::r2(mixed_model_FGA_nALL)
+
+# AIC BIC
+AIC(mixed_model_FGA_n2)
+BIC(mixed_model_FGA_n2)
+
+#  R-squre
+performance::r2(mixed_model_FGA_n2)
+
+
+# AIC BIC
+AIC(mixed_model_FGA_n2_2)
+BIC(mixed_model_FGA_n2_2)
+
+#  R-squre
+performance::r2(mixed_model_FGA_n2_2)
+
+
+# AIC BIC
+AIC(mixed_model_FGA_n3)
+BIC(mixed_model_FGA_n3)
+
+#  R-squre
+performance::r2(mixed_model_FGA_n3)
+
+# AIC BIC
+AIC(mixed_model_FGA_n3_2)
+BIC(mixed_model_FGA_n3_2)
+
+#  R-squre
+performance::r2(mixed_model_FGA_n3_2)
+
+# AIC BIC
+AIC(mixed_model_FGA_int)
+BIC(mixed_model_FGA_int)
+
+#  R-squre
+performance::r2(mixed_model_FGA_int)
+```
+
+```{r}
+# ## Modeling for FGA without patient id
+# mixed_model_FGA <- lmer(sqrt(FGA) ~ AGE + SEX + RACE  + TUMOR_PURITY+OS_STATUS+CANCER_TYPE +SMOKING_HISTORY +(1 | Study ) , data = cleaned_data)
+# summary(mixed_model_FGA)
+# 
+# # confint(mixed_model_FGA)
+# # 
+# # ranef(mixed_model_FGA)
+```
+
+## Output and Result
+
+
+## Diagnosis 
+
+### Diagnosis for Residuals
+```{r}
+# logit transformation
+# check normality of residuals
+qqnorm(residuals(mixed_model_FGA_x))
+qqline(residuals(mixed_model_FGA_x))
+
+# scatter plot for residuals vs fitted values
+plot(fitted(mixed_model_FGA_x), residuals(mixed_model_FGA_x))
+abline(h = 0, col = "red")
+```
+
+
+
+```{r}
+# check normality of residuals
+qqnorm(residuals(mixed_model_crossed))
+qqline(residuals(mixed_model_crossed))
+
+# scatter plot for residuals vs fitted values
+plot(fitted(mixed_model_crossed), residuals(mixed_model_crossed))
+abline(h = 0, col = "blue")
+```
+
+
+### Fitness
+```{r}
+# AIC BIC
+AIC(mixed_model_crossed)
+BIC(mixed_model_crossed)
+
+#  R-squre
+performance::r2(mixed_model_crossed)
+
+# AIC BIC
+AIC(mixed_model_nested)
+BIC(mixed_model_nested)
+
+#  R-squre
+performance::r2(mixed_model_nested)
+
+# AIC BIC
+AIC(mixed_model_nested2)
+BIC(mixed_model_nested2)
+
+#  R-squre
+performance::r2(mixed_model_nested2)
+
+
+```
+
+```{r}
+# AIC BIC
+AIC(mixed_model_nested)
+BIC(mixed_model_nested)
+
+#  R-squre
+r2(mixed_model_nested)
+```
+```{r}
+# Check variance components of random effects
+VarCorr(mixed_model)
+
+# Summary of model to check fixed effects
+summary(mixed_model)
+
+VarCorr(mixed_model_nested)
+
+summary(mixed_model_nested
+        )
+```
+
+## Modeling for FGA
+# ```{r}
+# mixed_model_FGA <- lmer(FGA ~ AGE + SEX + RACE  + TUMOR_PURITY+OS_STATUS+CANCER_TYPE +SMOKING_HISTORY + (1 | PATIENT_ID ) +(1 | Study ) , data = cleaned_data)
+# summary(mixed_model_FGA)
+# 
+# confint(mixed_model_FGA)
+# 
+# ranef(mixed_model_FGA)
+# ```
+
+```{r}
+# logit transformation
+# check normality of residuals
+qqnorm(residuals(mixed_model_FGA))
+qqline(residuals(mixed_model_FGA))
+
+# scatter plot for residuals vs fitted values
+plot( residuals(mixed_model_FGA))
+plot(fitted(mixed_model_FGA))
+abline(h = 0, col = "red")
+```
+
+
+
+```{r}
+# AIC BIC
+AIC(mixed_model_FGA)
+BIC(mixed_model_FGA)
+
+#  R-squre
+performance::r2(mixed_model_FGA)
+```
+
+```{r}
+# AIC BIC
+AIC(mixed_model_nested_FGA)
+BIC(mixed_model_nested_FGA)
+
+#  R-squre
+performance::r2(mixed_model_nested_FGA)
+```
+
+```{r}
+# Check variance components of random effects
+VarCorr(mixed_model_FGA)
+
+# Summary of model to check fixed effects
+summary(mixed_model_FGA)
+
+
+```

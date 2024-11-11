@@ -1,0 +1,197 @@
+---
+title: "EDA: TMB FGA Mutation# vs Sex"
+author: "Yuxiang Ren"
+date: "2024-07-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(modeest)
+library(tidyr)
+library(lme4)
+```
+
+```{r}
+data <- read_csv("/Users/JasonRen.584/Desktop/capstone/data/combined_data_TMB_Gender.csv")
+str(data)
+head(data)
+```
+# Summary For TMB
+```{r}
+
+summary(data$TMB)
+
+ggplot(data, aes(x = TMB)) +
+  geom_density(fill = "blue", alpha = 0.7) +
+  labs(title = "Density Plot of TMB", x = "TMB", y = "Density")+xlim(0, 100) 
+```
+```{r}
+tmb_stats_by_sex <- data %>%
+  group_by(sex) %>%
+  summarise(
+    mean_TMB = mean(TMB, na.rm = TRUE),
+    median_TMB = median(TMB, na.rm = TRUE),
+    mode_TMB = mlv(TMB[!is.na(TMB)], method = "mfv"),  
+    sd_TMB = sd(TMB, na.rm = TRUE),
+    min_TMB = min(TMB, na.rm = TRUE),
+    max_TMB = max(TMB, na.rm = TRUE)
+  )
+
+print(tmb_stats_by_sex)
+
+
+ggplot(data, aes(x = sex, y = TMB, fill = sex)) +
+  geom_boxplot() +
+  labs(title = "TMB by Sex", x = "Sex", y = "TMB") +
+  theme_minimal()
+
+
+ggplot(data, aes(x = TMB, fill = sex)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density Plot of TMB by Sex", x = "TMB", y = "Density") +
+  theme_minimal()
+```
+```{r}
+# filter: make sure TMB and sex without NA
+filtered_data <- data %>%
+  filter(!is.na(TMB) & (sex == "Male" | sex == "Female")) %>%
+  select(study_id, patient_id, sample_id, FGA, mutation_count, TMB,sex)
+
+str(filtered_data)
+
+head(filtered_data)
+
+
+na_counts <- colSums(is.na(filtered_data))
+print(na_counts)
+cat("total size:",nrow(filtered_data))
+```
+
+```{r}
+drop_na_data <- filtered_data |> drop_na()
+str(drop_na_data)
+head(drop_na_data)
+nrow(drop_na_data)
+```
+
+```{r}
+# Summary
+overall_stats <- filtered_data %>%
+  summarise(
+    mean_FGA = mean(FGA, na.rm = TRUE),
+    median_FGA = median(FGA, na.rm = TRUE),
+    sd_FGA = sd(FGA, na.rm = TRUE),
+    mean_TMB = mean(TMB, na.rm = TRUE),
+    median_TMB = median(TMB, na.rm = TRUE),
+    sd_TMB = sd(TMB, na.rm = TRUE),
+    mean_mutation_count = mean(mutation_count, na.rm = TRUE),
+    median_mutation_count = median(mutation_count, na.rm = TRUE),
+    sd_mutation_count = sd(mutation_count, na.rm = TRUE)
+  )
+
+# Male vs Female
+sex_stats <- filtered_data %>%
+  group_by(sex) %>%
+  summarise(
+    mean_FGA = mean(FGA, na.rm = TRUE),
+    median_FGA = median(FGA, na.rm = TRUE),
+    sd_FGA = sd(FGA, na.rm = TRUE),
+    mean_TMB = mean(TMB, na.rm = TRUE),
+    median_TMB = median(TMB, na.rm = TRUE),
+    sd_TMB = sd(TMB, na.rm = TRUE),
+    mean_mutation_count = mean(mutation_count, na.rm = TRUE),
+    median_mutation_count = median(mutation_count, na.rm = TRUE),
+    sd_mutation_count = sd(mutation_count, na.rm = TRUE)
+  )
+
+
+print("Overall Stats")
+print(overall_stats)
+print("Stats by Sex")
+print(sex_stats)
+
+```
+
+```{r}
+# Visualzations
+ggplot(filtered_data, aes(x = sex, y = FGA, fill = sex)) +
+  geom_boxplot() +
+  labs(title = "FGA by Sex", x = "Sex", y = "FGA") +
+  theme_minimal()
+
+ggplot(filtered_data, aes(x = sex, y = TMB, fill = sex)) +
+  geom_boxplot() +
+  labs(title = "TMB by Sex", x = "Sex", y = "TMB") +
+  theme_minimal()
+
+ggplot(filtered_data, aes(x = sex, y = mutation_count, fill = sex)) +
+  geom_boxplot() +
+  labs(title = "Mutation Count by Sex", x = "Sex", y = "Mutation Count") +
+  theme_minimal()
+
+ggplot(filtered_data, aes(x = FGA, fill = sex)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density Plot of FGA by Sex", x = "FGA", y = "Density") +
+  theme_minimal()
+
+ggplot(filtered_data, aes(x = TMB, fill = sex)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density Plot of TMB by Sex", x = "TMB", y = "Density") +
+  theme_minimal()
+
+
+ggplot(filtered_data, aes(x = mutation_count, fill = sex)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density Plot of Mutation Count by Sex", x = "Mutation Count", y = "Density") +
+  theme_minimal()
+```
+
+```{r}
+mixed_model_1 <- lmer(TMB ~ sex + (1 | patient_id), data = filtered_data)
+summary(mixed_model_1)
+
+mixed_model_2 <- lmer(FGA ~ sex + (1 | patient_id), data = filtered_data)
+summary(mixed_model_2)
+
+mixed_model_3 <- lmer(mutation_count ~ sex + (1 | patient_id), data = filtered_data)
+summary(mixed_model_3)
+
+```
+
+```{r}
+mixed_model_4 <- lmer(TMB ~ sex + (1 | study_id), data = filtered_data)
+summary(mixed_model_4)
+
+mixed_model_5 <- lmer(FGA ~ sex + (1 | study_id), data = filtered_data)
+summary(mixed_model_5)
+
+mixed_model_6 <- lmer(mutation_count ~ sex + (1 | study_id), data = filtered_data)
+summary(mixed_model_6)
+
+
+
+```
+
+```{r}
+
+mixed_model_7 <- lmer(TMB ~ sex + (1 | sample_id), data = filtered_data)
+summary(mixed_model_7)
+
+mixed_model_7 <- lmer(FGA ~ sex + (1 | sample_id), data = filtered_data)
+summary(mixed_model_7)
+
+mixed_model_8 <- lmer(mutation_count ~ sex + (1 | sample_id), data = filtered_data)
+summary(mixed_model_8)
+
+
+
+```

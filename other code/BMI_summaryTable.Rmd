@@ -1,0 +1,264 @@
+---
+title: "BMI Summary"
+author: "Yuxiang Ren"
+date: "2024-08-10"
+output: html_document
+---
+
+```{r}
+library(tableone)
+library(readr)
+library(tidyverse)
+library(dplyr)
+library(knitr)
+```
+
+# Dataset 1
+```{r}
+BMI_dataset <- read_csv("~/Desktop/capstone/amd/BMI_dataset.csv")
+head(BMI_dataset)
+```
+
+
+```{r}
+
+variables <- c("SEX", "RACE", "ETHNICITY", "SITE_OF_TUMOR_TISSUE", "SMOKING_PACK_YEARS", "AGE", "OS_STATUS", "OS_MONTHS", "BMI", "BMI_CATEGORIES", "SMOKING_HISTORY","CANCER_TYPE","TMB")
+factor_vars <- c("SEX", "RACE", "ETHNICITY", "SITE_OF_TUMOR_TISSUE", "BMI_CATEGORIES", "SMOKING_HISTORY", "OS_STATUS","CANCER_TYPE")
+```
+
+```{r}
+
+# table_one <- CreateTableOne(vars = variables, data = BMI_dataset, factorVars = factor_vars)
+
+# print(table_one, showAllLevels = TRUE, smd = TRUE)
+```
+
+
+# FULL dataset
+```{r}
+Full_BMI <- read.delim("~/Desktop/capstone/amd/Full_BMI.csv")
+head(Full_BMI)
+# write.csv(Full_BMI,"/Users/JasonRen.584/Desktop/capstone/amd/Full_BMI_fixed.csv",row.names = FALSE)
+```
+
+```{r}
+
+variables <- c("SEX", "RACE", "ETHNICITY", "SITE_OF_TUMOR_TISSUE", "SMOKING_PACK_YEARS", "AGE", "OS_STATUS", "OS_MONTHS", "BMI", "BMI_CATEGORIES", "SMOKING_HISTORY","CANCER_TYPE","TMB","FGA","Study","TUMOR_PURITY")
+factor_vars <- c("SEX", "RACE", "ETHNICITY", "SITE_OF_TUMOR_TISSUE", "BMI_CATEGORIES", "SMOKING_HISTORY", "OS_STATUS","CANCER_TYPE","Study")
+strata <- "CANCER_TYPE" # Or any catagorical variable can be grouped
+```
+
+```{r}
+
+table_one <- CreateTableOne(vars = variables,
+                            # strata = strata,
+                            data = Full_BMI, factorVars = factor_vars)
+kable(print(table_one, showAllLevels = TRUE, smd = TRUE, noSpaces = TRUE))
+```
+
+## Plots
+```{r}
+# library(ggplot2)
+```
+```{r}
+
+# ggplot(Full_BMI, aes(x = CANCER_TYPE, fill = SEX)) +
+#   geom_bar(position = "dodge") +
+#   theme_minimal() +
+#   labs(title = "Distribution of Cancer Types by Sex",
+#        x = "Cancer Type",
+#        y = "Count")
+```
+
+```{r}
+library(dplyr)
+```
+
+## Cancer Type vs. Age
+```{r}
+
+cancertype_age <- Full_BMI %>%
+  group_by(CANCER_TYPE) %>%
+  summarise(
+    mean_age = mean(AGE, na.rm = TRUE),
+    sd_age = sd(AGE, na.rm = TRUE),
+    median_age = median(AGE, na.rm = TRUE),
+    IQR_age = IQR(AGE, na.rm = TRUE)
+  )
+
+print(cancertype_age)
+```
+
+## Race vs. TMB
+```{r}
+
+race_tmb <- Full_BMI %>%
+  group_by(RACE) %>%
+  summarise(
+    mean_tmb = mean(TMB, na.rm = TRUE),
+    sd_tmb = sd(TMB, na.rm = TRUE),
+    median_tmb = median(TMB, na.rm = TRUE),
+    IQR_tmb = IQR(TMB, na.rm = TRUE)
+  )
+
+print(race_tmb)
+```
+
+## Race vs. BMI
+```{r}
+
+race_bmi <- Full_BMI %>%
+  group_by(RACE) %>%
+  summarise(
+    mean_bmi = mean(BMI, na.rm = TRUE),
+    sd_bmi = sd(BMI, na.rm = TRUE),
+    median_bmi = median(BMI, na.rm = TRUE),
+    IQR_bmi = IQR(BMI, na.rm = TRUE)
+  )
+
+print(race_bmi)
+```
+
+## Race vs. FGA
+```{r}
+
+race_fga <- Full_BMI %>%
+  group_by(RACE) %>%
+  summarise(
+    mean_fga = mean(FGA, na.rm = TRUE),
+    sd_fga = sd(FGA, na.rm = TRUE),
+    median_fga = median(FGA, na.rm = TRUE),
+    IQR_fga = IQR(FGA, na.rm = TRUE)
+  )
+
+print(race_fga)
+```
+
+
+# Modeling
+
+```{r}
+
+library(lme4)
+library(ggplot2)
+library(broom.mixed)
+library(performance)
+library(MuMIn)
+library(car)
+```
+
+```{r}
+#factorize
+
+factor_vars <- c("SEX", "RACE", "ETHNICITY", "SITE_OF_TUMOR_TISSUE", "BMI_CATEGORIES", "SMOKING_HISTORY", "OS_STATUS", "CANCER_TYPE", "Study","PATIENT_ID","SAMPLE_ID","Study")
+
+Full_BMI_fac <- Full_BMI %>%
+  mutate_at(vars(factor_vars), as.factor)
+
+ str(Full_BMI_fac)
+```
+
+```{r}
+model <- lmer(TMB ~ AGE+SEX+RACE+ETHNICITY+(1|PATIENT_ID),data = Full_BMI_fac)
+# evalutation of model
+# 1. residuals
+par(mfrow = c(2, 2))
+
+# residual plot
+plot(model, which = 1)
+```
+
+```{r}
+# QQ-plot
+qqnorm(resid(model))
+qqline(resid(model))
+```
+```{r}
+# mul-colinearity check 
+vif_model <- vif(model)
+print(vif_model)
+```
+
+
+```{r}
+
+# fitness
+model_aic <- AIC(model)
+model_bic <- BIC(model)
+cat("AIC:", model_aic, "\n")
+cat("BIC:", model_bic, "\n")
+```
+
+```{r}
+# R^2
+model_r2 <- r.squaredGLMM(model)
+print(model_r2)
+```
+
+
+```{r}
+summary(model)
+```
+
+```{r}
+model_1 <- lmer(TMB ~ AGE+SEX+RACE+ETHNICITY+(1|PATIENT_ID),data = Full_BMI_fac)
+model_2 <- lmer(TMB ~ AGE+SEX+RACE+ETHNICITY+(1|PATIENT_ID)+(1|SAMPLE_ID),data = Full_BMI_fac,REML = FALSE)
+model_3 <- lmer(TMB ~ AGE+SEX+RACE+ETHNICITY+(1|PATIENT_ID)+(1|SAMPLE_ID)+(1|Study),data = Full_BMI_fac,REML = FALSE)
+# model_4 <- lmer(TMB ~ AGE+SEX+RACE+ETHNICITY+(1|PATIENT_ID)+(1|Study),data = Full_BMI_fac,REML =FALSE)
+```
+```{r}
+# compare AIC and BIC
+aic_values <- AIC(model_1, model_2, model_3)
+print(aic_values)
+
+bic_values <- BIC(model_1, model_2, model_3)
+print(bic_values)
+```
+```{r echo=FALSE}
+
+# # we chose lowest BIC and AIC model
+# 
+# ## choose fixed effect var
+# # 使用逐步回归进行变量选择
+# model_null <- lmer(TMB ~ 1 + (1 | patient_id), data = cancer_data, REML = FALSE)
+# model_full <- lmer(TMB ~ age + sex + bmi + group + treatment + (1 | patient_id), data = cancer_data, REML = FALSE)
+# 
+# # 前向选择
+# model_step <- step(model_null, scope = list(lower = model_null, upper = model_full), direction = "both")
+# summary(model_step)
+# 
+# ## 使用LASSO进行变量选择
+# x <- model.matrix(TMB ~ age + sex + bmi + group + treatment, data = cancer_data)
+# y <- cancer_data$TMB
+# 
+# lasso_model <- cv.glmnet(x, y, alpha = 1, family = "gaussian")
+# 
+# # 提取最佳lambda值
+# best_lambda <- lasso_model$lambda.min
+# 
+# # 使用最佳lambda值重新拟合模型
+# lasso_final <- glmnet(x, y, alpha = 1, lambda = best_lambda)
+# coef(lasso_final)
+# 
+# ## 3. 模型评估
+# # 选择最佳模型
+# best_model <- model_step
+# 
+# # 显示模型结果
+# summary(best_model)
+# 
+# # R²和AIC/BIC
+# r2 <- r.squaredGLMM(best_model)
+# aic_best <- AIC(best_model)
+# bic_best <- BIC(best_model)
+# 
+# cat("R²:", r2, "\n")
+# cat("AIC:", aic_best, "\n")
+# cat("BIC:", bic_best, "\n")
+# 
+# # 交叉验证
+# train_control <- trainControl(method = "cv", number = 10)
+# cv_results <- train(TMB ~ age + sex + bmi + group + (1 | patient_id), data = cancer_data, method = "lmer", trControl = train_control)
+# 
+# print(cv_results)
+```
